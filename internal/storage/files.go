@@ -137,6 +137,9 @@ func deleteChild(ctx context.Context, root, target string, expected []os.FileInf
 			return e
 		}
 	}
+	if e = CheckCleanup(ctx); e != nil {
+		return e
+	}
 	return removeTree(ctx, r, filepath.Base(target), uint64(info.Sys().(*syscall.Stat_t).Dev), expected...)
 }
 func removeTree(ctx context.Context, parent *os.Root, name string, dev uint64, expected ...os.FileInfo) error {

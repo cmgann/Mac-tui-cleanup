@@ -49,9 +49,9 @@ type SimProfile struct {
 	IsAvailable                                         *bool
 }
 type SimImage struct {
-	Identifier, Build, Version, Kind, State, RuntimeIdentifier, RuntimeBundlePath, LastUsedAt string
-	Deletable                                                                                 *bool
-	SizeBytes                                                                                 json.RawMessage
+	Identifier, Build, Version, Kind, State, RuntimeIdentifier, RuntimeBundlePath, LastUsedAt, Path string
+	Deletable                                                                                       *bool
+	SizeBytes                                                                                       json.RawMessage
 }
 
 func ParseSimDevices(out string) ([]SimDevice, error) {
@@ -211,6 +211,7 @@ func (s *Simulators) deviceCandidate(ctx context.Context, tool string, d SimDevi
 		Runtime string
 	}{d, d.Runtime})}}
 	c.Path = filepath.Join(s.set(), d.UDID)
+	c.ScopePaths = []string{c.Path, d.LogPath}
 	c.Description = fmt.Sprintf("Device %s · Runtime %s · State %s · Available %t. Deleting this simulator permanently loses its installed apps, test databases, settings and logs. Individual review required.", d.UDID, d.Runtime, d.State, *d.IsAvailable)
 	if d.State != "Shutdown" {
 		c.Protected = true
@@ -258,6 +259,7 @@ func runtimeProfile(image SimImage, profiles []SimProfile) string {
 }
 func (s *Simulators) runtimeCandidate(tool string, r SimImage, profiles []SimProfile, devices []SimDevice) storage.Candidate {
 	c := storage.Candidate{ID: "simulator:runtime:" + r.Identifier, Provider: s.ID(), Category: simulatorRuntimes, Name: "Runtime " + r.Version + " (" + r.Build + ")", Reclaimable: true, ReviewRequired: true, Risk: storage.High, Metadata: map[string]string{"kind": "runtime", "resource": r.Identifier, "tool": tool, "set": s.set(), "identity": fingerprint(struct{ ID, Build, Version, Kind, Runtime, Bundle string }{r.Identifier, r.Build, r.Version, r.Kind, r.RuntimeIdentifier, r.RuntimeBundlePath})}}
+	c.ScopePaths = []string{r.Path, r.RuntimeBundlePath}
 	profile := runtimeProfile(r, profiles)
 	c.Metadata["runtime"] = profile
 	c.Description = "Managed runtime " + r.Identifier + " · " + r.Kind + " · State " + r.State + ". Removing it requires downloading the runtime again before compatible tests can run. Runtime bundles are never deleted directly. Individual review required."

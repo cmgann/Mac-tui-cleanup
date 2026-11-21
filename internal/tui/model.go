@@ -39,6 +39,9 @@ type savedMsg struct {
 	status string
 }
 type Model struct {
+	protectedDraft                         []string
+	protectedEditing                       bool
+	protectedCursor                        int
 	progressTab                            int
 	lastOutputStream                       string
 	filterDraft                            config.Filter
@@ -141,7 +144,18 @@ func (m Model) indices() []int {
 	return ids
 }
 func (m Model) categories() []string {
-	return []string{"Docker", "Xcode", "Homebrew", "Other Developer"}
+	if len(m.engine.Providers) == 0 {
+		return []string{"Docker", "Xcode", "Homebrew", "Other Developer"}
+	}
+	var names []string
+	seen := map[string]bool{}
+	for _, p := range m.engine.Providers {
+		if !seen[p.ID()] {
+			names = append(names, p.ID())
+			seen[p.ID()] = true
+		}
+	}
+	return names
 }
 func (m Model) selected() []storage.Candidate {
 	var cs []storage.Candidate
@@ -171,6 +185,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = string(v)
 		return m, m.wait()
+	case preferencesSavedMsg:
+		m.busy = false
+		if v.err != nil {
+			m.status = v.err.Error()
+		} else {
+			m.snapshot.Candidates = v.candidates
+			m.status = v.status
+		}
+		return m, nil
+	case protectedSavedMsg:
+		m.busy = false
+		if v.err != nil {
+			m.status = v.err.Error()
+			return m, nil
+		}
+		m.settings = v.settings
+		m.snapshot.Candidates = v.candidates
+		m.protectedDraft = append([]string(nil), v.settings.ProtectedPaths...)
+		m.page = "settings"
+		m.status = "Protected paths saved. R refreshes removed protections and stale hints."
+		return m, nil
 	case phaseMsg:
 		m.cancel = v.cancel
 		m.status = v.status
@@ -263,10 +298,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.PasteMsg:
-		if m.page == "filters" && m.filterEditing {
+		if (m.page == "filters" && m.filterEditing) || (m.page == "protections" && m.protectedEditing) {
 			m.typed += strings.ReplaceAll(strings.ReplaceAll(v.Content, "\n", " "), "\r", " ")
 			r := []rune(m.typed)
-			m.typed = string(r[:min(128, len(r))])
+			limit := 128
+			if m.page == "protections" {
+				limit = 4096
+			}
+			m.typed = string(r[:min(limit, len(r))])
 		}
 		return m, nil
 	case tea.KeyPressMsg:
@@ -297,6 +336,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if k == "ctrl+c" {
 			return m, tea.Quit
+		}
+		if handled, cmd := m.protectionKey(k); handled {
+			return m, cmd
 		}
 		if handled, cmd := m.preferenceKey(k); handled {
 			return m, cmd
@@ -462,7 +504,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k == "down" || k == "j" {
 			switch m.page {
 			case "dashboard":
-				m.cursor = min(3, m.cursor+1)
+				m.cursor = min(max(0, len(m.categories())-1), m.cursor+1)
 			case "candidates":
 				m.cursor = min(max(0, len(m.indices())-1), m.cursor+1)
 			default:

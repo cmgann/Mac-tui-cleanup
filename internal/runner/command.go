@@ -38,11 +38,21 @@ func (b *limited) Write(p []byte) (int, error) {
 func (Exec) Run(ctx context.Context, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
+	options := Options(ctx)
+	if options.Guard != nil {
+		if e := options.Guard(ctx, name, args); e != nil {
+			return "", e
+		}
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = options.Directory
 	cmd.WaitDelay = 2 * time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.Env = append(os.Environ(), "HOMEBREW_NO_AUTO_UPDATE=1", "HOMEBREW_NO_ANALYTICS=1", "LC_ALL=C")
+	for key, value := range options.Environment {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
 	var out, stderr limited
 	emit, _ := ctx.Value(outputKey{}).(func(OutputEvent))
 	command := name + " " + strings.Join(args, " ")

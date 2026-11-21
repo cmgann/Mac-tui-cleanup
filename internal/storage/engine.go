@@ -12,6 +12,7 @@ import (
 )
 
 type Engine struct {
+	Policy    func() (Policy, error)
 	Providers []Provider
 	Home      string
 	History   History
@@ -50,6 +51,23 @@ func (e *Engine) ScanProgress(ctx context.Context, progress func(string)) Snapsh
 		s.Canceled = true
 		s.Errors = append(s.Errors, ctx.Err().Error())
 	}
+	if e.Policy != nil {
+		policy, err := e.Policy()
+		if err == nil {
+			err = policy.Validate()
+		}
+		if err != nil {
+			s.Errors = append(s.Errors, "Protection policy: "+err.Error())
+			for i := range s.Candidates {
+				if s.Candidates[i].Reclaimable {
+					s.Candidates[i].Protected = true
+					s.Candidates[i].ProtectionReason = "Protection policy unavailable"
+				}
+			}
+		} else {
+			policy.Apply(s.Candidates, time.Now())
+		}
+	}
 	s.At = time.Now()
 	return s
 }
@@ -67,12 +85,18 @@ func (e *Engine) Plan(ctx context.Context, cs []Candidate, age int) ([]Operation
 			continue
 		}
 		seen[c.ID] = true
+		if err := e.checkPolicy(c); err != nil {
+			return nil, err
+		}
 		p := e.provider(c.Provider)
 		if p == nil {
 			return nil, errors.New("unknown provider")
 		}
 		op, err := p.Plan(ctx, c, age)
 		if err != nil {
+			return nil, err
+		}
+		if err := e.checkPolicy(op.Candidate); err != nil {
 			return nil, err
 		}
 		ops = append(ops, op)
@@ -119,7 +143,9 @@ func (e *Engine) ExecuteProgress(ctx context.Context, ops []Operation, progress 
 		var outputMu sync.Mutex
 		var commandOutput string
 		truncated := false
-		operationCtx := runner.WithOutput(ctx, func(out runner.OutputEvent) {
+		guardedCtx := WithCleanupGuard(ctx, func() error { return e.checkPolicy(op.Candidate) })
+		guardedCtx = runner.WithCommandGuard(guardedCtx, func(context.Context, string, []string) error { return e.checkPolicy(op.Candidate) })
+		operationCtx := runner.WithOutput(guardedCtx, func(out runner.OutputEvent) {
 			outputMu.Lock()
 			defer outputMu.Unlock()
 			text := out.Text
@@ -151,7 +177,9 @@ func (e *Engine) ExecuteProgress(ctx context.Context, ops []Operation, progress 
 		if p == nil {
 			err = errors.New("unknown provider")
 		} else {
-			result, err = p.Clean(operationCtx, op)
+			if err = e.checkPolicy(op.Candidate); err == nil {
+				result, err = p.Clean(operationCtx, op)
+			}
 		}
 		after, ae := e.disk()
 		r.AvailableAfter = after.Available
@@ -202,4 +230,15 @@ func (e *Engine) ExecuteProgress(ctx context.Context, ops []Operation, progress 
 		rs = append(rs, r)
 	}
 	return rs
+}
+
+func (e *Engine) checkPolicy(c Candidate) error {
+	if e.Policy == nil {
+		return nil
+	}
+	p, err := e.Policy()
+	if err != nil {
+		return fmt.Errorf("protection policy unavailable: %w", err)
+	}
+	return p.Check(c)
 }

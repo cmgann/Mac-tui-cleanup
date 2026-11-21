@@ -1,4 +1,4 @@
-name: macOS and live Docker validation
+name: Native platforms and isolated cleanup validation
 on:
   push:
   pull_request:
@@ -75,3 +75,56 @@ jobs:
       - run: go mod download
       - name: Validate supported simctl deletion in a private device set
         run: go test -tags=integration -v -timeout=7m ./internal/providers -run '^TestLiveSimulatorCleanup$'
+  native-linux:
+    name: Native Linux ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - run: test "$(go env GOARCH)" = '${{ matrix.arch }}'
+      - run: go mod download
+      - run: go test -race -v ./...
+      - run: make vet build release
+      - run: python3 scripts/smoke_tui.py dist/devclean-linux-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: devclean-linux-${{ matrix.arch }}
+          path: dist/devclean-linux-*
+  live-caches:
+    name: Disposable global caches (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      DEVCLEAN_LIVE_CACHES: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install disposable validation tools
+        run: |
+          npm install --prefix "$RUNNER_TEMP/devclean-tools" pnpm@10.28.0 yarn@1.22.22
+          echo "$RUNNER_TEMP/devclean-tools/node_modules/.bin" >> "$GITHUB_PATH"
+      - run: go mod download
+      - name: Validate real tool cleanup in a private fixture home
+        run: go test -tags=integration -v -timeout=10m ./internal/providers -run '^TestLiveGlobalCacheCleanup$'

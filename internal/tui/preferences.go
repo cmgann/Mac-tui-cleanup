@@ -11,9 +11,23 @@ import (
 	"github.com/cmgann/Mac-tui-cleanup/internal/storage"
 )
 
+type preferencesSavedMsg struct {
+	candidates []storage.Candidate
+	status     string
+	err        error
+}
+
 func (m *Model) saveSettings(status string) tea.Cmd {
 	s, path := m.settings, m.settingsPath
-	return m.start("Saving preferences", func(context.Context, func(string)) tea.Msg { return savedMsg{config.Save(path, s), status} })
+	home := m.engine.Home
+	cs := append([]storage.Candidate(nil), m.snapshot.Candidates...)
+	return m.start("Saving preferences", func(context.Context, func(string)) tea.Msg {
+		if e := config.Save(path, s); e != nil {
+			return preferencesSavedMsg{err: e}
+		}
+		s.Policy(home).Apply(cs, time.Now())
+		return preferencesSavedMsg{candidates: cs, status: status}
+	})
 }
 func (m Model) visible(c storage.Candidate) bool { return m.settings.Filter.Matches(c, time.Now()) }
 func (m Model) bulkEligible(c storage.Candidate) bool {
@@ -59,7 +73,7 @@ func (m *Model) preferenceKey(k string) (bool, tea.Cmd) {
 			m.settingsCursor = max(0, m.settingsCursor-1)
 			return true, nil
 		case "down", "j":
-			m.settingsCursor = min(3, m.settingsCursor+1)
+			m.settingsCursor = min(6, m.settingsCursor+1)
 			return true, nil
 		case "enter", "space", " ":
 			switch m.settingsCursor {
@@ -71,6 +85,17 @@ func (m *Model) preferenceKey(k string) (bool, tea.Cmd) {
 				m.settings.OutputLines = nextNumber(m.settings.OutputLines, []int{50, 100, 200})
 			case 3:
 				m.settings.ShowCommandOutput = !m.settings.ShowCommandOutput
+			case 4:
+				m.protectedDraft = append([]string(nil), m.settings.ProtectedPaths...)
+				m.protectedCursor = 0
+				m.protectedEditing = false
+				m.page = "protections"
+				return true, nil
+			case 5:
+				m.settings.StaleDays = nextNumber(m.settings.StaleDays, []int{30, 90, 180, 365})
+			case 6:
+				m.page = "schedule-help"
+				return true, nil
 			}
 			return true, m.saveSettings("Preferences saved")
 		}
@@ -112,7 +137,7 @@ func (m *Model) preferenceKey(k string) (bool, tea.Cmd) {
 	case "up", "k":
 		m.filterCursor = max(0, m.filterCursor-1)
 	case "down", "j":
-		m.filterCursor = min(6, m.filterCursor+1)
+		m.filterCursor = min(7, m.filterCursor+1)
 	case "ctrl+s":
 		return true, m.applyFilters()
 	case "x", "X":
@@ -147,6 +172,8 @@ func (m *Model) preferenceKey(k string) (bool, tea.Cmd) {
 			default:
 				m.filterDraft.Visibility = "all"
 			}
+		case 7:
+			m.filterDraft.OnlyStale = !m.filterDraft.OnlyStale
 		case 6:
 			switch m.filterDraft.Sort {
 			case "size":
@@ -190,7 +217,7 @@ func (m Model) filtersView() string {
 	if m.filterDraft.OlderThanDays > 0 {
 		age = fmt.Sprintf("at least %d days (unknown dates hidden)", m.filterDraft.OlderThanDays)
 	}
-	rows := []string{"Search: " + m.filterDraft.Query, "Category contains: " + m.filterDraft.Category, "Minimum measured/estimated size: " + minSize, "Last modified: " + age, "Maximum cleanup risk: " + risk, "Visibility: " + m.filterDraft.Visibility, "Sort: " + m.filterDraft.Sort}
+	rows := []string{"Search: " + m.filterDraft.Query, "Category contains: " + m.filterDraft.Category, "Minimum measured/estimated size: " + minSize, "Last modified: " + age, "Maximum cleanup risk: " + risk, "Visibility: " + m.filterDraft.Visibility, "Sort: " + m.filterDraft.Sort, fmt.Sprintf("Only old/stale hints: %t", m.filterDraft.OnlyStale)}
 	b := "CLEANUP FILTERS\n\n"
 	for i, row := range rows {
 		if i == m.filterCursor {
@@ -209,7 +236,7 @@ func (m Model) settingsView() string {
 	if m.settings.CacheAgeDays == 0 {
 		age = "ALL reclaimable cache"
 	}
-	rows := []string{"BuildKit age policy: " + age, "Bulk-selection risk ceiling: " + string(m.settings.BulkMaxRisk), fmt.Sprintf("Live output history lines: %d", m.settings.OutputLines), fmt.Sprintf("Show live command output: %t", m.settings.ShowCommandOutput)}
+	rows := []string{"BuildKit age policy: " + age, "Bulk-selection risk ceiling: " + string(m.settings.BulkMaxRisk), fmt.Sprintf("Live output history lines: %d", m.settings.OutputLines), fmt.Sprintf("Show live command output: %t", m.settings.ShowCommandOutput), fmt.Sprintf("Protected paths: %d (Enter manages)", len(m.settings.ProtectedPaths)), fmt.Sprintf("Old/stale hint threshold: %d days", m.settings.StaleDays), "Optional read-only schedule (Enter shows commands)"}
 	b := "PREFERENCES\n\n"
 	for i, row := range rows {
 		if i == m.settingsCursor {

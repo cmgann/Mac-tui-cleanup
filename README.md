@@ -1,12 +1,12 @@
-# devclean — macOS Developer Storage Cleaner
+# devclean — Developer Storage Cleaner for macOS and Linux
 
-A local Go terminal application for discovering developer disk usage, reviewing cleanup scope, and measuring the resulting change in available disk space. No cloud services, telemetry, scheduled tasks, sudo, or automatic cleanup.
+A local Go terminal application for discovering developer disk usage, reviewing cleanup scope, and measuring the resulting change in available disk space. No cloud services, telemetry, sudo, or automatic cleanup. Optional schedules run read-only scans only and are disabled by default.
 
-This is the first functional release. It performs real cleanup; review the supported scope and limitations below before using it.
+Version 0.4.0 includes the three planned implementation phases. It performs real cleanup; review the supported scope and limitations below before using it.
 
 ## Build and run
 
-Requires macOS and Go 1.26 or later. Both Intel and Apple Silicon are supported.
+Requires macOS or Linux and Go 1.26 or later. Intel/AMD64 and ARM64 are supported. Xcode features are available only on macOS.
 
 ```sh
 git clone git@github.com:cmgann/Mac-tui-cleanup.git
@@ -24,7 +24,7 @@ cp dist/devclean "$HOME/.local/bin/devclean"
 # Add $HOME/.local/bin to PATH if needed.
 ```
 
-`make release` builds `dist/devclean-darwin-arm64` and `dist/devclean-darwin-amd64`. Binaries are standalone; Docker, Xcode utilities, Homebrew, and other tools are optional integrations, discovered on PATH. Builds are not Developer ID signed or notarized.
+`make release` builds `dist/devclean-darwin-{arm64,amd64}` and `dist/devclean-linux-{arm64,amd64}`. Binaries are standalone; Docker, Xcode utilities, Homebrew, and other tools are optional integrations, discovered on PATH. Builds are not Developer ID signed or notarized.
 
 ```sh
 devclean --scan                 # Read-only scan, JSON on stdout
@@ -48,7 +48,7 @@ The terminal starts with a read-only scan. Filters affect the TUI and selection;
 | H / E | History / export history from history screen |
 | S / ↑↓ / Enter | Preferences / choose field / cycle and save |
 | F or / | Edit persistent cleanup filters; Ctrl+S applies and saves |
-| V | Individually review device support or a simulator resource; type REVIEW to acknowledge |
+| V | Individually review device support, simulators or global caches; type REVIEW to acknowledge |
 | P | Pin or unpin a candidate; rescan after unpinning |
 | O / T | Sort candidate list by size / modification time |
 | PgUp/PgDn | Scroll long views |
@@ -66,7 +66,7 @@ During cleanup the spinner shows the current resource, elapsed time, completed/s
 | Docker | Context, `system df`, each builder, cache, images, container writable layers, volume names | Individual local single-node builders; individual unused images; individual stopped containers |
 | Xcode | Individual DerivedData projects; iOS/watchOS/tvOS/visionOS/macOS device-support folders; archives; user/system CoreSimulator; unavailable devices and installed runtimes through `simctl` | DerivedData projects; reviewed device-support folders; individually reviewed shutdown simulators; unused, explicitly deletable managed runtime images where supported |
 | Homebrew | Executable-discovered prefix/cache sizes; `cleanup --dry-run` output and savings when reported | Supported `brew cleanup`; scope is rechecked against reviewed dry-run output |
-| Other developer tools | Tool-discovered Go build/module caches, npm cache, pnpm store, Yarn cache; standard SwiftPM cache | Read-only |
+| Other developer tools | Global Go build/module caches, npm cache, pnpm store, Yarn Classic cache, SwiftPM global cache | Individually reviewed tool-supported cache cleanup within validated global roots |
 
 BuildKit defaults to a **30-day** policy; Settings offers 7 days or all reclaimable cache. Each selected builder uses `buildx prune --builder NAME --all --force`, adding `--filter until=...` when age restricted. Installed flag support is checked before pruning. Docker handles live cache eligibility. An age-restricted operation may recover less than the displayed all-age private-cache estimate.
 
@@ -83,7 +83,8 @@ Docker images are checked for container references immediately before removal. S
 - Managed runtime images can be removed only when `simctl runtime list --json` explicitly reports a deletable disk image, its installed runtime mapping is unambiguous, and no device references it. Installed capability help and a target-specific dry run must succeed before the plan is offered. Both device and runtime inventories are rechecked before execution. Runtime cleanup uses only `simctl runtime delete UUID`; runtime bundles, mounts and assets are never removed directly. Unsupported formats, permissions, capabilities or busy resources produce visible errors/read-only candidates. Tools are revalidated and an explicit device-set argument prevents context drift. No `delete all` or `delete unavailable` bulk command is used.
 - Filesystem cleanup is limited to direct children of the current user's standard DerivedData and explicitly enumerated platform DeviceSupport roots. Roots, parent paths, symlinked cleanup roots, repositories, special files, changed directories, and mount crossings are rejected. Open directory handles and Go `os.Root` constrain traversal during deletion. Do not concurrently move or modify directories being cleaned.
 - Filesystem cleanup uses **permanent deletion**, with the separate typed confirmation. Trash support is not implemented. There is no claim that moving to Trash recovers space.
-- Additional caches, source repositories, `node_modules`, and module contents are not deletion targets.
+- Extended cache cleanup uses only `go clean -cache`, `go clean -modcache`, `npm cache clean --force --cache PATH`, `pnpm store prune --store-dir BASE`, Yarn Classic `cache clean --cache-folder BASE`, and `swift package --cache-path PATH purge-cache`. Every cache requires individual REVIEW acknowledgement and the normal plan/DELETE confirmation. The tool executable, resolved cache path, root identity, supported help, source-repository exclusions, symlinks and mount boundaries are rechecked. Each command runs in a private working directory with its reviewed cache location fixed explicitly. Tool output does not invent reclaimed bytes.
+- Cache cleanup is limited to recognized global locations; custom/project-local paths and symlink-containing caches stay inspection-only. Yarn 2+ project caches are not targeted. Entire source repositories, project `node_modules`, Swift `.build` directories and arbitrary user-selected directories are never cleaned. Go's global module download cache is a separate, explicitly reviewed action; it can require redownloading dependencies. pnpm pruning estimates use the store size as an upper bound, since only unreferenced content is removed.
 - Default tests use temporary filesystem trees and fake commands. The separately opted-in integration suite cleans only its own resources on an isolated, disposable real Docker daemon. No real developer files or existing Docker resources are cleanup targets.
 
 ## Cleanup filters and preferences
@@ -91,6 +92,34 @@ Docker images are checked for container references immediately before removal. S
 F (or /) opens a keyboard-operated filter editor. Up/Down chooses a field and Enter edits/cycles it. Ctrl+S applies and persists; Esc cancels; X resets the draft. Available filters are text search, category text, minimum estimated/measured size, last-modified age, maximum cleanup risk, visibility (all / actionable / eligible), and size/name/date/risk sorting. Unknown dates do not pass an age threshold, and unknown/zero estimates do not pass a positive size threshold. Applying a filter deselects candidates it hides, so hidden selections cannot silently remain in a cleanup plan. Device support and simulator resources still need individual review.
 
 S opens preferences for BuildKit age policy, the bulk-selection risk ceiling (medium by default), displayed output retention (50/100/200 wrapped lines), and live-output visibility. These persist alongside pins and filters. A higher-risk item can still be individually selected when visible. Changing display preferences never bypasses protection or confirmation. Disabling live-output display does not disable the bounded per-operation history transcript. Live chunks may be coalesced under heavy output; operation boundaries and final results remain reliable.
+
+## Phase 3: protection, old-candidate hints, and read-only schedules
+
+S → Protected paths opens a draft editor: A adds a literal absolute path or ~/path, D removes a draft entry, Ctrl+S validates and saves. The command-line equivalents are:
+
+```sh
+devclean --protect-path "$HOME/Library/Developer/Xcode/Archives"
+devclean --unprotect-path "$HOME/Library/Developer/Xcode/Archives"
+```
+
+Protections match ancestors **and descendants**, resolve existing symlink aliases, and cover command footprints such as Homebrew's prefix/cache or an entire package store. If a tool cannot exclude one protected child, its whole action is blocked. Policy is reread during planning, before execution, before external commands, and at the filesystem-deletion boundary. Removing protections/pins does not make an old snapshot selectable: rescan first. Virtual Docker resources use candidate pins because host filesystem paths cannot reliably represent remote/VM resources.
+
+Candidates with known timestamps older than 90 days are automatically labeled **old/stale**. S changes the threshold; F has an old/stale-only filter. Filesystem modification, Docker creation dates and builder activity are labeled by their actual basis. Unknown/future dates are not classified. Age is only a review hint: it does not prove disuse, grant eligibility, select anything, or bypass protection.
+
+Optional scheduling is explicit:
+
+```sh
+devclean --schedule daily --schedule-hour 9
+devclean --schedule weekly --schedule-hour 9
+devclean --schedule status
+devclean --schedule off
+```
+
+macOS uses a user launchd agent; Linux uses a systemd **user** timer. A logged-in GUI/user service session is required; registration failures are surfaced and generated files rolled back. No sudo or system-wide jobs are used. Daily scans run at the chosen local hour; weekly scans run Mondays. Linux timers can catch up a missed read-only scan after login. Keep the installed binary at its registered absolute path, and reinstall the schedule after moving it.
+
+Jobs invoke only `devclean --scheduled-scan`. This dedicated mode acquires a scan lock, runs read-only discovery, and atomically replaces `scheduled-scan.json` in the application's configuration directory. It cannot plan or execute cleanup, select candidates, or append cleanup history. CLI modes cannot be combined. No schedule is installed at startup or during ordinary scans. Disabling the schedule removes only the app's managed files; unrelated jobs are never replaced. Scheduled snapshots contain local resource names and paths: keep them private when sharing.
+
+Linux uses native statfs disk measurements, the same TUI/safety/history layers, Docker, Homebrew when installed, and global cache providers. Xcode/physical-device/simulator providers are omitted on Linux. Linux configuration is normally `~/.config/devclean` (or `$XDG_CONFIG_HOME/devclean`). Native AMD64/ARM64 CI executes both Linux binaries, runs race tests and the interactive preferences workflow. Scheduler lifecycle tests use fake service managers; no real personal schedule is installed by tests.
 
 ## Understanding the numbers
 
@@ -126,6 +155,8 @@ make release
 
 Tests use temporary trees and fake command responses. Coverage includes physical-device inventories, per-folder review, connected-device changes, unavailable device services at the deletion boundary, JSON parsing, shared-cache accounting, protected selection, cleanup planning, path traversal, symlinks, changed/disappeared targets, active resources, context changes, Homebrew dry-run changes, canceled/partial cleanup, signed disk changes, JSON persistence, locks, terminal sanitization, and resizing. CI explicitly verifies native Apple Silicon hardware (`hw.optional.arm64=1`) and Go runtime architecture, runs the tests on both Apple Silicon and Intel macOS, and executes the actual binary in an isolated terminal. A separate disposable Docker job runs real cleanup and verifies preserved data. Another native macOS job creates devices in a private simulator set, deletes only its reviewed fixture through the application engine, and verifies a second device remains. See [validation procedures](docs/validation.md) and [CI runs](https://github.com/cmgann/Mac-tui-cleanup/actions).
 
-Architecture: `cmd/devclean` assembles the app; `internal/tui` owns asynchronous messages/rendering; `internal/storage` handles candidates, plans, constrained filesystem operations, measurements and history; `internal/providers` implements tool behavior; `internal/runner` executes fixed programs with argument arrays, contexts, process-group cancellation and bounded output; `internal/config` persists preferences. No shell command strings are executed.
+Architecture: `cmd/devclean` assembles the app; `internal/tui` owns asynchronous messages/rendering; `internal/storage` handles candidates, plans, constrained filesystem operations, measurements and history; `internal/providers` implements tool behavior; `internal/runner` executes fixed programs with argument arrays, contexts, process-group cancellation and bounded output; `internal/config` persists preferences; `internal/schedule` manages explicitly installed read-only user jobs. No shell command strings are executed.
 
 Dependencies are pinned: [Bubble Tea](https://github.com/charmbracelet/bubbletea/releases/tag/v2.1.1), [Bubbles](https://github.com/charmbracelet/bubbles/releases/tag/v2.2.1), [Lip Gloss](https://github.com/charmbracelet/lipgloss/releases/tag/v2.0.6). Tool behavior follows the supported [Buildx list](https://docs.docker.com/reference/cli/docker/buildx/ls/), [disk usage](https://docs.docker.com/reference/cli/docker/buildx/du/), and [prune](https://docs.docker.com/reference/cli/docker/buildx/prune/) interfaces. Unsupported installed flags or formats surface as provider errors rather than triggering unsafe fallbacks.
+
+Tool-specific cache behavior follows primary documentation: [Go cache management](https://go.dev/ref/mod#module-cache), [Yarn Classic cache](https://classic.yarnpkg.com/en/docs/cli/cache/), [pnpm store locations](https://github.com/pnpm/pnpm/blob/main/pnpm/docs/settings/store.md), and [SwiftPM purge-cache](https://github.com/swiftlang/swift-package-manager/blob/main/Sources/PackageManagerDocs/Documentation.docc/Package/PackagePurgeCache.md). Unsupported installed capabilities remain errors/read-only cases rather than triggering direct filesystem deletion.

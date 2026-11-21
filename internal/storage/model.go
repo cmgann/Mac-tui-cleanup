@@ -23,6 +23,9 @@ type DeviceSupportInfo struct {
 }
 
 type Candidate struct {
+	ScopePaths                                      []string
+	Stale                                           bool
+	StaleReason                                     string
 	ID, Provider, Category, Name, Description, Path string
 	EstimatedBytes                                  uint64
 	Risk                                            Risk

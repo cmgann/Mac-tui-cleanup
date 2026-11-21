@@ -44,11 +44,14 @@ func (h History) Load() ([]Record, error) {
 	return r, nil
 }
 func AtomicJSON(path string, v any) error {
-	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
-		return e
-	}
 	b, e := json.MarshalIndent(v, "", "  ")
 	if e != nil {
+		return e
+	}
+	return AtomicWrite(path, b)
+}
+func AtomicWrite(path string, b []byte) error {
+	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
 		return e
 	}
 	f, e := os.CreateTemp(filepath.Dir(path), ".devclean-*")
@@ -71,6 +74,7 @@ func AtomicJSON(path string, v any) error {
 	}
 	return os.Rename(f.Name(), path)
 }
+
 func (h History) Append(record Record) error {
 	unlock, e := FileLock(h.Path + ".lock")
 	if e != nil {

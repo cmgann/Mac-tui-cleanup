@@ -12,6 +12,8 @@ import (
 type Settings struct {
 	CacheAgeDays      int
 	Pinned            []string
+	ProtectedPaths    []string
+	StaleDays         int
 	Filter            Filter
 	BulkMaxRisk       storage.Risk
 	ShowCommandOutput bool
@@ -38,9 +40,12 @@ func Load(path string) (Settings, error) {
 func Save(path string, s Settings) error { return storage.AtomicJSON(path, s) }
 
 func Defaults() Settings {
-	return Settings{CacheAgeDays: 30, BulkMaxRisk: storage.Medium, ShowCommandOutput: true, OutputLines: 100, Filter: Filter{Sort: "size", Visibility: "all"}}
+	return Settings{CacheAgeDays: 30, StaleDays: 90, BulkMaxRisk: storage.Medium, ShowCommandOutput: true, OutputLines: 100, Filter: Filter{Sort: "size", Visibility: "all"}}
 }
 func Normalize(s Settings) Settings {
+	if s.StaleDays < 7 || s.StaleDays > 3650 {
+		s.StaleDays = 90
+	}
 	if s.BulkMaxRisk != storage.Low && s.BulkMaxRisk != storage.Medium && s.BulkMaxRisk != storage.High {
 		s.BulkMaxRisk = storage.Medium
 	}
@@ -66,4 +71,8 @@ func Normalize(s Settings) Settings {
 	s.Filter.Query = string([]rune(s.Filter.Query)[:min(128, len([]rune(s.Filter.Query)))])
 	s.Filter.Category = string([]rune(s.Filter.Category)[:min(80, len([]rune(s.Filter.Category)))])
 	return s
+}
+
+func (s Settings) Policy(home string) storage.Policy {
+	return storage.Policy{Home: home, ProtectedPaths: s.ProtectedPaths, Pinned: s.Pinned, StaleDays: s.StaleDays}
 }

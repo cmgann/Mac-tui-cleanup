@@ -21,6 +21,7 @@ func (*Docker) ID() string { return "Docker" }
 
 type Builder struct {
 	Name, Driver, Err string
+	LastActivity      string
 	Nodes             []struct{ Name, Endpoint, Status, Err string }
 }
 type CacheEntry struct {
@@ -182,6 +183,8 @@ func (d *Docker) Scan(ctx context.Context) ([]storage.Candidate, error) {
 		}
 		seen[b.Name] = true
 		c := storage.Candidate{ID: "docker:builder:" + b.Name, Provider: d.ID(), Category: "BuildKit", Name: b.Name, Risk: storage.Medium, Metadata: map[string]string{"context": name, "host": host, "builder": b.Name, "driver": b.Driver}}
+		c.LastModified = parseDockerDate(b.LastActivity)
+		c.Metadata["age_basis"] = "builder last activity"
 		key, err := d.builderIdentity(ctx, b)
 		if err != nil {
 			c.Protected = true
@@ -227,7 +230,7 @@ func (d *Docker) Scan(ctx context.Context) ([]storage.Candidate, error) {
 			}
 			for _, v := range rows {
 				stopped := v["State"] == "exited" || v["State"] == "created"
-				c := storage.Candidate{ID: "docker:container:" + v["ID"], Provider: d.ID(), Category: "Containers", Name: v["Names"], Description: "State: " + v["State"] + " · Created: " + v["CreatedAt"] + " · Writable layer: " + v["Size"] + ". Container-local data will be lost; mounted volumes are retained.", Risk: storage.High, Reclaimable: stopped, Protected: !stopped, ProtectionReason: "Active container", Metadata: map[string]string{"context": name, "host": host, "container": v["ID"]}}
+				c := storage.Candidate{ID: "docker:container:" + v["ID"], Provider: d.ID(), Category: "Containers", Name: v["Names"], Description: "State: " + v["State"] + " · Created: " + v["CreatedAt"] + " · Writable layer: " + v["Size"] + ". Container-local data will be lost; mounted volumes are retained.", Risk: storage.High, Reclaimable: stopped, Protected: !stopped, ProtectionReason: "Active container", LastModified: parseDockerDate(v["CreatedAt"]), Metadata: map[string]string{"context": name, "host": host, "container": v["ID"], "age_basis": "created"}}
 				cs = append(cs, c)
 			}
 		}
@@ -250,7 +253,7 @@ func (d *Docker) Scan(ctx context.Context) ([]storage.Candidate, error) {
 				if err != nil {
 					errs = append(errs, err)
 				}
-				cs = append(cs, storage.Candidate{ID: "docker:image:" + v["ID"], Provider: d.ID(), Category: "Images", Name: v["Repository"] + ":" + v["Tag"], Description: "ID: " + v["ID"] + " · Nominal size: " + v["Size"] + ". Shared layers excluded from estimate. Removal requires re-download or rebuild.", Risk: storage.High, Reclaimable: unused, Protected: !unused, ProtectionReason: "Referenced by containers or reference check failed", Metadata: map[string]string{"context": name, "host": host, "image": v["ID"]}})
+				cs = append(cs, storage.Candidate{ID: "docker:image:" + v["ID"], Provider: d.ID(), Category: "Images", Name: v["Repository"] + ":" + v["Tag"], Description: "ID: " + v["ID"] + " · Nominal size: " + v["Size"] + ". Shared layers excluded from estimate. Removal requires re-download or rebuild.", Risk: storage.High, Reclaimable: unused, Protected: !unused, ProtectionReason: "Referenced by containers or reference check failed", LastModified: parseDockerDate(v["CreatedAt"]), Metadata: map[string]string{"context": name, "host": host, "image": v["ID"], "age_basis": "created"}})
 			}
 		}
 		out, err = d.cli(ctx, "--context", name, "volume", "ls", "--format", "{{json .}}")
@@ -447,4 +450,13 @@ func parsePruneReported(output string, buildkit bool) (*uint64, error) {
 		reported = &n
 	}
 	return reported, nil
+}
+
+func parseDockerDate(s string) time.Time {
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05 -0700 MST", "2006-01-02 15:04:05 -0700"} {
+		if t, e := time.Parse(layout, s); e == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }

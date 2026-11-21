@@ -42,7 +42,7 @@ func (m Model) View() tea.View {
 		ids := m.indices()
 		if m.cursor < len(ids) {
 			c := m.snapshot.Candidates[ids[m.cursor]]
-			body = fmt.Sprintf("%s\n\n%s / %s\n%s\n\nLocation: %s\nMeasured/estimated size: %s\nRisk: %s\nModified: %s\n\n%s\n\nProtection/review: %s\n\nSpace selects · V reviews resource · P pins · Esc back", safe(c.Name), c.Provider, c.Category, c.ID, safe(c.Path), storage.Bytes(c.EstimatedBytes), c.Risk, modifiedLabel(c.LastModified), safe(c.Description), candidateStatus(c))
+			body = fmt.Sprintf("%s\n\n%s / %s\n%s\n\nLocation: %s\nMeasured/estimated size: %s\nRisk: %s\nModified: %s\n\n%s\n\nProtection/review: %s\n\nSpace selects · V reviews resource · P pins · Esc back", safe(c.Name), c.Provider, c.Category, c.ID, safe(c.Path), storage.Bytes(c.EstimatedBytes), c.Risk, modifiedLabel(c.LastModified), safe(c.Description)+"\n"+safe(c.StaleReason), candidateStatus(c))
 		}
 	case "support-review":
 		body = "INDIVIDUAL RESOURCE REVIEW\n\n"
@@ -51,7 +51,7 @@ func (m Model) View() tea.View {
 				body += safe(c.Path) + "\n\n" + safe(c.Description) + "\n\nSize: " + storage.Bytes(c.EstimatedBytes) + "\nModified: " + modifiedLabel(c.LastModified) + "\n\n"
 			}
 		}
-		body += "Device support may be needed for historical crash symbolication. Simulator deletion permanently loses installed apps, test databases and settings; runtime removal requires a new download. Preserve or pin resources you need.\n\nType REVIEW and press Enter to acknowledge this resource only. This does not delete or select it. A separate plan review and DELETE confirmation are still required. Fresh safety checks run before execution.\n\n> " + m.typed + "\n\nEsc cancels."
+		body += "Device support may be needed for historical crash symbolication. Simulator deletion permanently loses installed apps, test databases and settings; runtime removal requires a new download. Global cache cleanup can require downloading packages or rebuilding products; pnpm removes only unreferenced packages. Preserve or pin resources you need.\n\nType REVIEW and press Enter to acknowledge this resource only. This does not delete or select it. A separate plan review and DELETE confirmation are still required. Fresh safety checks run before execution.\n\n> " + m.typed + "\n\nEsc cancels."
 	case "review":
 		body = "CLEANUP REVIEW\n\n"
 		for i, op := range m.ops {
@@ -113,10 +113,14 @@ func (m Model) View() tea.View {
 		body = m.settingsView()
 	case "filters":
 		body = m.filtersView()
+	case "protections":
+		body = m.protectionsView()
+	case "schedule-help":
+		body = "OPTIONAL READ-ONLY SCANS\n\nNo schedule is enabled automatically. Install a schedule only when you want recurring read-only reports:\n\ndevclean --schedule daily --schedule-hour 9\ndevclean --schedule weekly --schedule-hour 9\ndevclean --schedule status\ndevclean --schedule off\n\nUses macOS launchd or Linux systemd user timers without sudo. Scheduled jobs can only scan and save scheduled-scan.json in the application configuration directory. They do not plan, select, clean or append cleanup history. The latest report is replaced atomically; missing tool/session errors remain visible.\n\nEsc returns to the dashboard."
 	case "warnings":
 		body = "SCAN WARNINGS\n\n" + safe(strings.Join(m.snapshot.Errors, "\n\n")) + "\n\nEsc returns to dashboard."
 	case "help":
-		body = "HELP\n\n↑/↓ or J/K  Navigate or scroll\nEnter       Category / details / review continuation\nSpace       Select candidate or eligible category\nA           Select visible eligible items within bulk risk ceiling\nC           Build and review cleanup plan\nR           Rescan (read-only)\nW           Full scan warnings\nH           History; E exports JSON\nF / /       Persistent cleanup filters\nS           Cleanup and live-output preferences\nV           Review a device-support/simulator resource\nP           Pin/unpin candidate\nO / T       Sort candidates by size / modification time\nEsc         Back or request cancellation\nPgUp/PgDn   Scroll live output; End follows latest\nQ           Quit when idle\n\nCleanup always requires review followed by typing DELETE.\nVolumes and archives remain protected. Device support and simulators require individual review. Simulator bundles are never removed directly.\nClose Xcode and xcodebuild before filesystem/simulator cleanup.\nZero estimate for Docker images/containers means unknown unique savings, not zero usage.\nRead provider errors on the dashboard; incomplete scans are not complete inventories."
+		body = "HELP\n\n↑/↓ or J/K  Navigate or scroll\nEnter       Category / details / review continuation\nSpace       Select candidate or eligible category\nA           Select visible eligible items within bulk risk ceiling\nC           Build and review cleanup plan\nR           Rescan (read-only)\nW           Full scan warnings\nH           History; E exports JSON\nF / /       Persistent cleanup filters\nS           Cleanup and live-output preferences\nV           Review device support, simulators or global caches\nP           Pin/unpin candidate\nO / T       Sort candidates by size / modification time\nEsc         Back or request cancellation\nPgUp/PgDn   Scroll live output; End follows latest\nQ           Quit when idle\n\nCleanup always requires review followed by typing DELETE.\nVolumes and archives remain protected. Device support, simulators and global caches require individual review. Simulator bundles are never removed directly.\nClose Xcode and xcodebuild before filesystem/simulator cleanup.\nZero estimate for Docker images/containers means unknown unique savings, not zero usage.\nRead provider errors on the dashboard; incomplete scans are not complete inventories."
 	}
 	body = ansi.Wrap(body, width, "")
 	lines := strings.Split(body, "\n")
@@ -171,6 +175,13 @@ func (m Model) dashboard(width int) string {
 		}
 		b += line + "\n"
 	}
+	stale := 0
+	for _, c := range m.snapshot.Candidates {
+		if c.Stale {
+			stale++
+		}
+	}
+	b += fmt.Sprintf("\nOld/stale hints: %d (review only)", stale)
 	b += "\nFilters: " + safe(m.settings.Filter.Summary()) + " (F)\nSelected estimate: " + storage.Bytes(storage.Estimate(m.selected())) + "\n"
 	if len(m.snapshot.Errors) > 0 {
 		b += warn.Render(fmt.Sprintf("\n%d scan warnings · W opens details", len(m.snapshot.Errors)))
@@ -197,6 +208,9 @@ func (m Model) candidates(width int) string {
 			mark = "x"
 		}
 		line := fmt.Sprintf("[%s] %s · %s · %s", mark, safe(c.Name), storage.Bytes(c.EstimatedBytes), c.Category)
+		if c.Stale {
+			line += " · old/stale"
+		}
 		line = ansi.Truncate(line, width-1, "…")
 		if j == m.cursor {
 			line = focus.Render("›" + line)

@@ -10,6 +10,7 @@ import (
 )
 
 type Filter struct {
+	OnlyStale        bool
 	Query, Category  string
 	MinBytes         uint64
 	OlderThanDays    int
@@ -28,6 +29,9 @@ func RiskRank(r storage.Risk) int {
 	}
 }
 func (f Filter) Matches(c storage.Candidate, now time.Time) bool {
+	if f.OnlyStale && !c.Stale {
+		return false
+	}
 	if f.Query != "" && !strings.Contains(strings.ToLower(c.Name+" "+c.Path+" "+c.Category+" "+c.Provider+" "+c.Description), strings.ToLower(f.Query)) {
 		return false
 	}
@@ -77,6 +81,9 @@ func (f Filter) SortIndices(cs []storage.Candidate, ids []int) {
 }
 func (f Filter) Summary() string {
 	var parts []string
+	if f.OnlyStale {
+		parts = append(parts, "old/stale hints")
+	}
 	if f.Query != "" {
 		parts = append(parts, "text="+f.Query)
 	}
