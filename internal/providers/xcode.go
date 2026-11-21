@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/cmgann/Mac-tui-cleanup/internal/runner"
 	"github.com/cmgann/Mac-tui-cleanup/internal/storage"
@@ -18,6 +17,7 @@ type Xcode struct {
 	Home                string
 	Run                 runner.Runner
 	SystemSimulatorRoot string
+	Devices             DeviceSource
 }
 
 func (*Xcode) ID() string { return "Xcode" }
@@ -32,6 +32,9 @@ func (x *Xcode) Scan(ctx context.Context) ([]storage.Candidate, error) {
 	var cs []storage.Candidate
 	var errs []error
 	base := filepath.Join(x.Home, "Library/Developer/Xcode")
+	var inventory DeviceInventory
+	var inventoryErr error
+	inventoryRead := false
 	for _, category := range []string{"DerivedData", "iOS DeviceSupport", "watchOS DeviceSupport", "tvOS DeviceSupport", "visionOS DeviceSupport", "macOS DeviceSupport"} {
 		parent := filepath.Join(base, category)
 		entries, e := os.ReadDir(parent)
@@ -62,9 +65,27 @@ func (x *Xcode) Scan(ctx context.Context) ([]storage.Candidate, error) {
 					c.ProtectionReason = e.Error()
 				}
 			} else {
-				c.Protected = true
-				c.ProtectionReason = "Device support protected: connected-device identity cannot be reliably established by this release. Historical files may be needed to symbolize crash reports."
-				c.Description = "Platform: " + category + " · Version/build from directory: " + entry.Name() + " · Device identifier: unavailable. Modified " + i.ModTime().Format(time.RFC3339)
+				if !inventoryRead {
+					inventory, inventoryErr = x.deviceInventory(ctx)
+					inventoryRead = true
+					if inventoryErr != nil {
+						errs = append(errs, inventoryErr)
+					}
+				}
+				c.DeviceSupport = supportDetails(category, entry.Name(), i.ModTime())
+				c.DeviceSupport.InventorySources = inventory.Sources
+				c.DeviceSupport.InventoryAt = inventory.At
+				c.Reclaimable = true
+				c.ReviewRequired = true
+				c.Risk = storage.High
+				c.ProtectionReason = supportProtection(c.DeviceSupport, inventory, inventoryErr)
+				c.Protected = c.ProtectionReason != ""
+				if ve := storage.ValidateTarget(ctx, parent, path); ve != nil {
+					c.Protected = true
+					c.ProtectionReason = ve.Error()
+				}
+				c.Description = fmt.Sprintf("Platform: %s · OS: %s · Build: %s · Device identifier: %s · Matched physical device IDs: %s. Individual review required. Historical support files may be needed to symbolize older crash reports. Recent (<30 days): %t. Device inventory: %s.", c.DeviceSupport.Platform, c.DeviceSupport.Version, c.DeviceSupport.Build, c.DeviceSupport.DeviceIdentifier, strings.Join(c.DeviceSupport.MatchedDeviceIDs, ", "), c.DeviceSupport.Recent, strings.Join(inventory.Sources, ", "))
+
 			}
 			if e != nil {
 				c.Protected = true
@@ -101,29 +122,56 @@ func (x *Xcode) Scan(ctx context.Context) ([]storage.Candidate, error) {
 	}
 	return cs, errors.Join(errs...)
 }
-func (x *Xcode) Plan(ctx context.Context, c storage.Candidate, _ int) (storage.Operation, error) {
-	if c.Category != "DerivedData" || !c.Eligible() {
-		return storage.Operation{}, errors.New("only eligible DerivedData projects may be cleaned")
+func (x *Xcode) cleanupRoot(c storage.Candidate) (string, error) {
+	if c.Category == "DerivedData" {
+		return x.derivedRoot(), nil
 	}
-	if e := storage.ValidateTarget(ctx, x.derivedRoot(), c.Path); e != nil {
+	if isDeviceSupport(c.Category) {
+		return filepath.Join(x.Home, "Library/Developer/Xcode", c.Category), nil
+	}
+	return "", errors.New("unsupported Xcode cleanup category")
+}
+func (x *Xcode) Plan(ctx context.Context, c storage.Candidate, _ int) (storage.Operation, error) {
+	root, e := x.cleanupRoot(c)
+	if e != nil {
 		return storage.Operation{}, e
 	}
-	return storage.Operation{Candidate: c, Scope: "Permanently delete DerivedData project: " + c.Path, Warning: "Permanent deletion of build products and indexes. Xcode will rebuild them. Xcode and xcodebuild must be closed."}, nil
+	if !c.Eligible() {
+		return storage.Operation{}, errors.New("Xcode candidate is protected or has not been individually reviewed")
+	}
+	if e = storage.ValidateTarget(ctx, root, c.Path); e != nil {
+		return storage.Operation{}, e
+	}
+	if c.Category == "DerivedData" {
+		return storage.Operation{Candidate: c, Scope: "Permanently delete DerivedData project: " + c.Path, Warning: "Permanent deletion of build products and indexes. Xcode will rebuild them. Xcode and xcodebuild must be closed."}, nil
+	}
+	if !c.ReviewRequired || !c.Reviewed {
+		return storage.Operation{}, errors.New("device support requires individual review")
+	}
+	info, e := os.Lstat(c.Path)
+	if e != nil {
+		return storage.Operation{}, e
+	}
+	if fileIdentity(info) != c.Metadata["identity"] {
+		return storage.Operation{}, errors.New("support folder changed since review; rescan required")
+	}
+	inventory, e := x.deviceInventory(ctx)
+	details := supportDetails(c.Category, filepath.Base(c.Path), info.ModTime())
+	if reason := supportProtection(details, inventory, e); reason != "" {
+		return storage.Operation{}, errors.New(reason)
+	}
+	c.DeviceSupport = details
+	c.DeviceSupport.InventoryAt = inventory.At
+	c.DeviceSupport.InventorySources = inventory.Sources
+	return storage.Operation{Candidate: c, Scope: "Permanently delete reviewed " + c.Category + ": " + c.Path, Warning: fmt.Sprintf("Permanent deletion. OS %s, build %s. Historical device support may be required to symbolize older crash reports. Recent (<30 days): %t. A fresh physical-device check passed using %s. Close Xcode and xcodebuild; pins and connected-device protections cannot be overridden.", details.Version, details.Build, details.Recent, strings.Join(inventory.Sources, ", "))}, nil
 }
 func (x *Xcode) Clean(ctx context.Context, op storage.Operation) (storage.Result, error) {
 	c := op.Candidate
 	if _, e := x.Plan(ctx, c, 0); e != nil {
 		return storage.Result{}, e
 	}
-	out, e := x.Run.Run(ctx, "/bin/ps", "-axo", "comm=")
-	if e != nil {
-		return storage.Result{}, fmt.Errorf("cannot check active Xcode processes: %w", e)
-	}
-	for _, line := range strings.Split(out, "\n") {
-		switch filepath.Base(strings.TrimSpace(line)) {
-		case "Xcode", "xcodebuild":
-			return storage.Result{}, errors.New("Xcode or xcodebuild is active; close it and rescan")
-		}
+	if e := x.ensureXcodeClosed(ctx); e != nil {
+		return storage.Result{}, e
 	}
 	info, e := os.Lstat(c.Path)
 	if e != nil {
@@ -136,11 +184,38 @@ func (x *Xcode) Clean(ctx context.Context, op storage.Operation) (storage.Result
 	if e != nil {
 		return storage.Result{}, e
 	}
-	e = storage.DeleteChild(ctx, x.derivedRoot(), c.Path, info)
-	result := storage.Result{ProviderUsageBeforeBytes: &n, Output: "DerivedData removal attempted: " + c.Path + ". Provider does not report reclaimed bytes."}
+	root, e := x.cleanupRoot(c)
+	if e != nil {
+		return storage.Result{}, e
+	}
+	// Final device and process checks run after the filesystem validation walk.
+	e = storage.DeleteChildGuarded(ctx, root, c.Path, info, func(ctx context.Context) error {
+		if isDeviceSupport(c.Category) {
+			if _, e := x.Plan(ctx, c, 0); e != nil {
+				return e
+			}
+		}
+		return x.ensureXcodeClosed(ctx)
+	})
+	result := storage.Result{ProviderUsageBeforeBytes: &n, Output: "Xcode cleanup attempted: " + c.Path + ". Provider does not report reclaimed bytes."}
 	if e == nil {
 		zero := uint64(0)
 		result.ProviderUsageAfterBytes = &zero
 	}
 	return result, e
+}
+
+func (x *Xcode) ensureXcodeClosed(ctx context.Context) error {
+	out, e := x.Run.Run(ctx, "/bin/ps", "-axo", "comm=")
+	if e != nil {
+		return fmt.Errorf("cannot check active Xcode processes: %w", e)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		switch filepath.Base(strings.TrimSpace(line)) {
+		case "Xcode", "xcodebuild":
+			return errors.New("Xcode or xcodebuild is active; close it and rescan")
+		}
+	}
+
+	return nil
 }

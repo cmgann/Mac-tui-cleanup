@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"github.com/cmgann/Mac-tui-cleanup/internal/providers"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/cmgann/Mac-tui-cleanup/internal/config"
+	"github.com/cmgann/Mac-tui-cleanup/internal/providers"
 	"github.com/cmgann/Mac-tui-cleanup/internal/storage"
 )
 
@@ -131,5 +131,53 @@ func TestConfirmedCleanupEndToEnd(t *testing.T) {
 		if c.Path == path {
 			t.Fatal("cleanup did not rescan")
 		}
+	}
+}
+
+func TestDeviceSupportRequiresIndividualReviewAndSelection(t *testing.T) {
+	m := New(&storage.Engine{}, config.Settings{}, "")
+	m.category = "Xcode"
+	m.page = "details"
+	m.snapshot.Candidates = []storage.Candidate{{ID: "support", Provider: "Xcode", Category: "iOS DeviceSupport", Path: "/fixture/support", Reclaimable: true, ReviewRequired: true, Risk: storage.High}}
+	send := func(k tea.KeyPressMsg) { t.Helper(); u, _ := m.Update(k); m = u.(Model) }
+	send(key("a"))
+	send(key(" "))
+	if m.snapshot.Candidates[0].Selected {
+		t.Fatal("unreviewed folder selected")
+	}
+	send(key("v"))
+	if m.page != "support-review" {
+		t.Fatal("review not opened")
+	}
+	for _, r := range "REVIE" {
+		send(key(string(r)))
+	}
+	send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.snapshot.Candidates[0].Reviewed {
+		t.Fatal("incomplete review accepted")
+	}
+	send(key("W"))
+	send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.snapshot.Candidates[0].Reviewed || m.snapshot.Candidates[0].Selected || m.busy {
+		t.Fatal("review deleted or selected candidate")
+	}
+	m.page = "candidates"
+	send(key("a"))
+	if m.snapshot.Candidates[0].Selected {
+		t.Fatal("bulk selection included device support")
+	}
+	send(key(" "))
+	if !m.snapshot.Candidates[0].Selected {
+		t.Fatal("individual selection unavailable after review")
+	}
+	m.snapshot.Candidates[0].Protected = true
+	send(key("v"))
+	if m.page == "support-review" {
+		t.Fatal("pin/protection bypassed by review")
+	}
+	u, _ := m.Update(scanDone{snapshot: storage.Snapshot{Candidates: []storage.Candidate{{ID: "support", Provider: "Xcode", ReviewRequired: true}}}})
+	m = u.(Model)
+	if m.snapshot.Candidates[0].Reviewed || m.snapshot.Candidates[0].Selected {
+		t.Fatal("review or selection persisted across rescan")
 	}
 }

@@ -35,6 +35,7 @@ type savedMsg struct {
 	status string
 }
 type Model struct {
+	reviewID                      string
 	engine                        *storage.Engine
 	settings                      config.Settings
 	settingsPath                  string
@@ -220,6 +221,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k == "ctrl+c" {
 			return m, tea.Quit
 		}
+		if m.page == "support-review" {
+			switch k {
+			case "up", "k":
+				m.offset = max(0, m.offset-1)
+			case "down", "j":
+				m.offset++
+			case "pgdown":
+				m.offset += max(1, m.height-8)
+			case "pgup":
+				m.offset = max(0, m.offset-max(1, m.height-8))
+			case "esc":
+				m.page = "details"
+				m.typed = ""
+				m.reviewID = ""
+			case "backspace":
+				if len(m.typed) > 0 {
+					m.typed = m.typed[:len(m.typed)-1]
+				}
+			case "enter":
+				if m.typed == "REVIEW" {
+					for i := range m.snapshot.Candidates {
+						c := &m.snapshot.Candidates[i]
+						if c.ID == m.reviewID && c.ReviewRequired && !c.Protected {
+							c.Reviewed = true
+						}
+					}
+					m.page = "details"
+					m.status = "Review acknowledged for this scan. Space selects this folder; C reviews the deletion plan."
+					m.typed = ""
+					m.reviewID = ""
+				}
+			default:
+				if len(k) == 1 && len(m.typed) < 6 {
+					m.typed += k
+				}
+			}
+			return m, nil
+		}
 		if m.page == "confirm" {
 			switch k {
 			case "esc":
@@ -350,18 +389,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if (k == "v" || k == "V") && (m.page == "details" || m.page == "candidates") {
+			ids := m.indices()
+			if m.cursor < len(ids) {
+				c := m.snapshot.Candidates[ids[m.cursor]]
+				if c.ReviewRequired && !c.Protected {
+					m.reviewID = c.ID
+					m.typed = ""
+					m.offset = 0
+					m.page = "support-review"
+				} else {
+					m.status = "Review unavailable: " + c.ProtectionReason
+				}
+			}
+			return m, nil
+		}
 		if (m.page == "dashboard" || m.page == "candidates" || m.page == "details") && (k == "space" || k == " ") {
 			if m.page == "dashboard" {
 				cat := m.categories()[m.cursor]
 				all := true
 				for _, c := range m.snapshot.Candidates {
-					if c.Provider == cat && c.Eligible() && !c.Selected {
+					if c.Provider == cat && c.Eligible() && !c.ReviewRequired && !c.Selected {
 						all = false
 					}
 				}
 				for i := range m.snapshot.Candidates {
 					c := &m.snapshot.Candidates[i]
-					if c.Provider == cat && c.Eligible() {
+					if c.Provider == cat && c.Eligible() && !c.ReviewRequired {
 						c.Selected = !all
 					}
 				}
@@ -372,7 +426,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if c.Eligible() {
 						c.Selected = !c.Selected
 					} else {
-						m.status = "Protected: " + c.ProtectionReason
+						if c.ReviewRequired && !c.Reviewed && !c.Protected {
+							m.status = "Individual review required: V opens device-support review"
+						} else {
+							m.status = "Protected: " + c.ProtectionReason
+						}
 					}
 				}
 			}
@@ -381,7 +439,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if (k == "a" || k == "A") && (m.page == "dashboard" || m.page == "candidates") {
 			for i := range m.snapshot.Candidates {
 				c := &m.snapshot.Candidates[i]
-				if c.Eligible() && (m.page == "dashboard" || c.Provider == m.category) {
+				if c.Eligible() && !c.ReviewRequired && (m.page == "dashboard" || c.Provider == m.category) {
 					c.Selected = true
 				}
 			}

@@ -1,22 +1,23 @@
 package main
 
 import (
-	tea "charm.land/bubbletea/v2"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/cmgann/Mac-tui-cleanup/internal/config"
-	"github.com/cmgann/Mac-tui-cleanup/internal/providers"
-	"github.com/cmgann/Mac-tui-cleanup/internal/runner"
-	"github.com/cmgann/Mac-tui-cleanup/internal/storage"
-	"github.com/cmgann/Mac-tui-cleanup/internal/tui"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/cmgann/Mac-tui-cleanup/internal/config"
+	"github.com/cmgann/Mac-tui-cleanup/internal/providers"
+	"github.com/cmgann/Mac-tui-cleanup/internal/runner"
+	"github.com/cmgann/Mac-tui-cleanup/internal/storage"
+	"github.com/cmgann/Mac-tui-cleanup/internal/tui"
 )
 
 var version = "dev"

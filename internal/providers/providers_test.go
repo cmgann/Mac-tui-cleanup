@@ -194,7 +194,7 @@ func TestXcodeFixtureAndDeletion(t *testing.T) {
 		}
 		return `{}`, nil
 	}}
-	x := Xcode{Home: home, Run: f}
+	x := Xcode{Home: home, Run: f, Devices: &inventorySource{inventory: DeviceInventory{Devices: []AppleDevice{{Platform: "iOS", Version: "26.1", Build: "ABC123"}}}}}
 	cs, e := x.Scan(context.Background())
 	if e != nil {
 		t.Fatal(e)

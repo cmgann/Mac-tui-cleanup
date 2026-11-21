@@ -42,8 +42,16 @@ func (m Model) View() tea.View {
 		ids := m.indices()
 		if m.cursor < len(ids) {
 			c := m.snapshot.Candidates[ids[m.cursor]]
-			body = fmt.Sprintf("%s\n\n%s / %s\n%s\n\nLocation: %s\nMeasured/estimated size: %s\nRisk: %s\nModified: %s\n\n%s\n\nProtection: %s\n\nSpace selects · P pins · Esc back", safe(c.Name), c.Provider, c.Category, c.ID, safe(c.Path), storage.Bytes(c.EstimatedBytes), c.Risk, c.LastModified.Format(time.RFC3339), safe(c.Description), safe(c.ProtectionReason))
+			body = fmt.Sprintf("%s\n\n%s / %s\n%s\n\nLocation: %s\nMeasured/estimated size: %s\nRisk: %s\nModified: %s\n\n%s\n\nProtection/review: %s\n\nSpace selects · V reviews device support · P pins · Esc back", safe(c.Name), c.Provider, c.Category, c.ID, safe(c.Path), storage.Bytes(c.EstimatedBytes), c.Risk, c.LastModified.Format(time.RFC3339), safe(c.Description), candidateStatus(c))
 		}
+	case "support-review":
+		body = "DEVICE SUPPORT / INDIVIDUAL REVIEW\n\n"
+		for _, c := range m.snapshot.Candidates {
+			if c.ID == m.reviewID {
+				body += safe(c.Path) + "\n\n" + safe(c.Description) + "\n\nSize: " + storage.Bytes(c.EstimatedBytes) + "\nModified: " + c.LastModified.Format(time.RFC3339) + "\n\n"
+			}
+		}
+		body += "Deleting support files can prevent symbolication of historical crash reports. Keep release-related versions or pin this folder if unsure. Recent entries require this same explicit review.\n\nType REVIEW and press Enter to acknowledge this folder only. This does not delete or select it. A separate cleanup review and DELETE confirmation are still required. Device state will be checked again.\n\n> " + m.typed + "\n\nEsc cancels."
 	case "review":
 		body = "CLEANUP REVIEW\n\n"
 		for i, op := range m.ops {
@@ -110,7 +118,7 @@ func (m Model) View() tea.View {
 	case "warnings":
 		body = "SCAN WARNINGS\n\n" + safe(strings.Join(m.snapshot.Errors, "\n\n")) + "\n\nEsc returns to dashboard."
 	case "help":
-		body = "HELP\n\n↑/↓ or J/K  Navigate or scroll\nEnter       Category / details / review continuation\nSpace       Select candidate or eligible category\nA           Select eligible items in current view\nC           Build and review cleanup plan\nR           Rescan (read-only)\nW           Full scan warnings\nH           History; E exports JSON\nS           Settings and BuildKit age policy\nP           Pin/unpin candidate\nO / T       Sort candidates by size / modification time\nEsc         Back or request cancellation\nQ           Quit when idle\n\nCleanup always requires review followed by typing DELETE.\nVolumes, archives, device support and simulator bundles remain protected.\nClose Xcode and xcodebuild before DerivedData cleanup.\nZero estimate for Docker images/containers means unknown unique savings, not zero usage.\nRead provider errors on the dashboard; incomplete scans are not complete inventories."
+		body = "HELP\n\n↑/↓ or J/K  Navigate or scroll\nEnter       Category / details / review continuation\nSpace       Select candidate or eligible category\nA           Select eligible items in current view\nC           Build and review cleanup plan\nR           Rescan (read-only)\nW           Full scan warnings\nH           History; E exports JSON\nS           Settings and BuildKit age policy\nV           Review one device-support folder\nP           Pin/unpin candidate\nO / T       Sort candidates by size / modification time\nEsc         Back or request cancellation\nQ           Quit when idle\n\nCleanup always requires review followed by typing DELETE.\nVolumes, archives and simulator bundles remain protected. Device support requires V review and individual selection.\nClose Xcode and xcodebuild before DerivedData cleanup.\nZero estimate for Docker images/containers means unknown unique savings, not zero usage.\nRead provider errors on the dashboard; incomplete scans are not complete inventories."
 	}
 	body = ansi.Wrap(body, width, "")
 	lines := strings.Split(body, "\n")
@@ -165,7 +173,7 @@ func (m Model) dashboard(width int) string {
 }
 func (m Model) candidates(width int) string {
 	ids := m.indices()
-	b := m.category + " / CANDIDATES\nSpace selects · Enter details · P pin · O size · T date\n\n"
+	b := m.category + " / CANDIDATES\nSpace selects · Enter details · V review · P pin · O size · T date\n\n"
 	if len(ids) == 0 {
 		return b + "No candidates available. Inspect scan warnings on the dashboard."
 	}
@@ -177,6 +185,8 @@ func (m Model) candidates(width int) string {
 		mark := " "
 		if c.Protected {
 			mark = "−"
+		} else if c.ReviewRequired && !c.Reviewed {
+			mark = "?"
 		} else if c.Selected {
 			mark = "x"
 		}
@@ -189,7 +199,7 @@ func (m Model) candidates(width int) string {
 		}
 		b += line + "\n"
 	}
-	b += fmt.Sprintf("\n%d/%d · − protected · Selected estimate %s", m.cursor+1, len(ids), storage.Bytes(storage.Estimate(m.selected())))
+	b += fmt.Sprintf("\n%d/%d · ? review required · − protected · Selected estimate %s", m.cursor+1, len(ids), storage.Bytes(storage.Estimate(m.selected())))
 	return b
 }
 func recordText(r storage.Record) string {
@@ -209,4 +219,17 @@ func recordText(r storage.Record) string {
 		}
 	}
 	return fmt.Sprintf("%s · %s · success=%t\n%s\nEstimated: %s · Provider reported: %s\nObserved disk change: %s · Available before %s / after %s\nProvider usage before/after: %s\n%s\n%s\n%s\n\n", r.Timestamp.Format(time.RFC3339), r.Provider, r.Success, safe(r.Operation), storage.Bytes(r.EstimatedBytes), provider, observed, storage.Bytes(r.AvailableBefore), storage.Bytes(r.AvailableAfter), usage, safe(r.PlanWarning), safe(strings.Join(r.Errors, "\n")), safe(r.Output))
+}
+
+func candidateStatus(c storage.Candidate) string {
+	if c.Protected {
+		return safe(c.ProtectionReason)
+	}
+	if c.ReviewRequired {
+		if c.Reviewed {
+			return "Individual review acknowledged for this scan; fresh device checks still required"
+		}
+		return "Individual review required; V opens review"
+	}
+	return "Eligible"
 }

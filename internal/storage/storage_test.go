@@ -246,11 +246,28 @@ func TestMountDeviceGuard(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	wrongDevice := i.Sys().(*syscall.Stat_t).Dev + 1
+	wrongDevice := uint64(i.Sys().(*syscall.Stat_t).Dev) + 1
 	if e = removeTree(context.Background(), r, "project", wrongDevice); e == nil {
 		t.Fatal("device boundary ignored")
 	}
 	if _, e = os.Stat(path); e != nil {
 		t.Fatal("mounted target was removed")
+	}
+}
+
+func TestDeletionBoundaryGuard(t *testing.T) {
+	root := tempDir(t)
+	path := filepath.Join(root, "project")
+	os.Mkdir(path, 0700)
+	sentinel := filepath.Join(path, "symbols")
+	os.WriteFile(sentinel, []byte("preserve"), 0600)
+	info, _ := os.Stat(path)
+	called := false
+	err := DeleteChildGuarded(context.Background(), root, path, info, func(context.Context) error { called = true; return errors.New("device attached after validation") })
+	if err == nil || !called {
+		t.Fatal("boundary eligibility guard bypassed")
+	}
+	if _, e := os.Stat(sentinel); e != nil {
+		t.Fatal("guard rejection changed data")
 	}
 }

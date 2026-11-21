@@ -67,7 +67,7 @@ func ValidateTarget(ctx context.Context, root, target string) error {
 	if e != nil {
 		return e
 	}
-	dev := r.Sys().(*syscall.Stat_t).Dev
+	dev := uint64(r.Sys().(*syscall.Stat_t).Dev)
 	return filepath.WalkDir(target, func(p string, d fs.DirEntry, e error) error {
 		if e != nil {
 			return e
@@ -89,13 +89,22 @@ func ValidateTarget(ctx context.Context, root, target string) error {
 			return errors.New("special filesystem entry protected")
 		}
 		st := i.Sys().(*syscall.Stat_t)
-		if st.Dev != dev {
+		if uint64(st.Dev) != dev {
 			return errors.New("mounted filesystem protected")
 		}
 		return nil
 	})
 }
 func DeleteChild(ctx context.Context, root, target string, expected ...os.FileInfo) error {
+	return deleteChild(ctx, root, target, expected, nil)
+}
+
+// DeleteChildGuarded runs the fresh resource-eligibility check after filesystem
+// validation, so a slow safety walk cannot stale the device inventory.
+func DeleteChildGuarded(ctx context.Context, root, target string, expected os.FileInfo, guard func(context.Context) error) error {
+	return deleteChild(ctx, root, target, []os.FileInfo{expected}, guard)
+}
+func deleteChild(ctx context.Context, root, target string, expected []os.FileInfo, guard func(context.Context) error) error {
 	trustedRoot, e := os.Stat(root)
 	if e != nil {
 		return e
@@ -123,9 +132,14 @@ func DeleteChild(ctx context.Context, root, target string, expected ...os.FileIn
 	if !os.SameFile(trustedRoot, info) {
 		return errors.New("cleanup root changed during validation")
 	}
-	return removeTree(ctx, r, filepath.Base(target), info.Sys().(*syscall.Stat_t).Dev, expected...)
+	if guard != nil {
+		if e = guard(ctx); e != nil {
+			return e
+		}
+	}
+	return removeTree(ctx, r, filepath.Base(target), uint64(info.Sys().(*syscall.Stat_t).Dev), expected...)
 }
-func removeTree(ctx context.Context, parent *os.Root, name string, dev int32, expected ...os.FileInfo) error {
+func removeTree(ctx context.Context, parent *os.Root, name string, dev uint64, expected ...os.FileInfo) error {
 	if e := ctx.Err(); e != nil {
 		return e
 	}
@@ -142,7 +156,7 @@ func removeTree(ctx context.Context, parent *os.Root, name string, dev int32, ex
 	if i.Mode()&os.ModeSymlink != 0 {
 		return errors.New("target changed to symlink")
 	}
-	if i.Sys().(*syscall.Stat_t).Dev != dev {
+	if uint64(i.Sys().(*syscall.Stat_t).Dev) != dev {
 		return errors.New("mounted filesystem protected")
 	}
 	if !i.IsDir() && !i.Mode().IsRegular() {

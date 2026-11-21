@@ -1,12 +1,56 @@
-name: macOS validation
+name: macOS and live Docker validation
 on:
   push:
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  test:
-    runs-on: macos-15
+  native-macos:
+    name: Native macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: amd64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      DEVCLEAN_EXPECT_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Verify native hardware and toolchain
+        run: |
+          uname -m
+          go version
+          test "$(go env GOARCH)" = "$DEVCLEAN_EXPECT_ARCH"
+          if [ "$DEVCLEAN_EXPECT_ARCH" = arm64 ]; then
+            test "$(uname -m)" = arm64
+            test "$(sysctl -n hw.optional.arm64)" = 1
+          fi
+      - run: go mod download
+      - run: go test -race -v ./...
+      - run: make vet build release
+      - name: Execute native binary in a terminal
+        run: python3 scripts/smoke_tui.py dist/devclean-darwin-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: devclean-macos-${{ matrix.arch }}
+          path: dist/devclean-darwin-*
+  live-docker:
+    name: Disposable live Docker cleanup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DEVCLEAN_LIVE_DOCKER: '1'
+      DEVCLEAN_DISPOSABLE_DOCKER: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -14,8 +58,5 @@ jobs:
           go-version: '1.26.x'
           cache: true
       - run: go mod download
-      - run: make test vet release
-      - uses: actions/upload-artifact@v4
-        with:
-          name: devclean-macos
-          path: dist/devclean-darwin-*
+      - name: Validate live provider cleanup and preserved data
+        run: go test -tags=integration -v -timeout=12m ./internal/providers -run '^TestLiveDockerCleanup$'

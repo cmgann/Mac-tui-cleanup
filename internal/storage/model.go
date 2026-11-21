@@ -14,6 +14,14 @@ const (
 	High   Risk = "high"
 )
 
+type DeviceSupportInfo struct {
+	Platform, Version, Build, DeviceIdentifier string
+	MatchedDeviceIDs                           []string
+	InventorySources                           []string
+	InventoryAt                                time.Time
+	Recent                                     bool
+}
+
 type Candidate struct {
 	ID, Provider, Category, Name, Description, Path string
 	EstimatedBytes                                  uint64
@@ -22,9 +30,13 @@ type Candidate struct {
 	ProtectionReason                                string
 	LastModified                                    time.Time
 	Metadata                                        map[string]string
+	ReviewRequired, Reviewed                        bool
+	DeviceSupport                                   *DeviceSupportInfo
 }
 
-func (c Candidate) Eligible() bool { return c.Reclaimable && !c.Protected }
+func (c Candidate) Eligible() bool {
+	return c.Reclaimable && !c.Protected && (!c.ReviewRequired || c.Reviewed)
+}
 
 type Operation struct {
 	Candidate      Candidate
