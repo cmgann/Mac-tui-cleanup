@@ -12,6 +12,48 @@ import (
 	"github.com/cmgann/Mac-tui-cleanup/internal/storage"
 )
 
+func TestPnpmRegistryLinksRemainReadOnlyAndOtherLinksBlockCleanup(t *testing.T) {
+	home := tempDir(t)
+	c := &Caches{Home: home}
+	store := filepath.Join(home, "store/v10")
+	registry := filepath.Join(store, "projects")
+	project := filepath.Join(home, "project")
+	if e := os.MkdirAll(registry, 0700); e != nil {
+		t.Fatal(e)
+	}
+	if e := os.Mkdir(project, 0700); e != nil {
+		t.Fatal(e)
+	}
+	if e := os.WriteFile(filepath.Join(project, "package.json"), []byte("{}"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	link := filepath.Join(registry, strings.Repeat("a", 32))
+	if e := os.Symlink(project, link); e != nil {
+		t.Fatal(e)
+	}
+	ctx := context.Background()
+	if e := c.validateTree(ctx, store, "pnpm", "10.28.0"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := os.Stat(filepath.Join(project, "package.json")); e != nil {
+		t.Fatal("project was touched", e)
+	}
+	for _, kind := range []string{"npm", "go-build", "swift"} {
+		if c.validateTree(ctx, store, kind, "10.28.0") == nil {
+			t.Fatal("registry exception leaked to", kind)
+		}
+	}
+	if c.validateTree(ctx, store, "pnpm", "11.0.0") == nil {
+		t.Fatal("unverified layout accepted")
+	}
+	if e := os.Symlink(project, filepath.Join(store, "outside")); e != nil {
+		t.Fatal(e)
+	}
+	if c.validateTree(ctx, store, "pnpm", "10.28.0") == nil {
+		t.Fatal("non-registry link accepted")
+	}
+}
+
 func cacheFixture(t *testing.T) (*Caches, *fakeRunner, string, *bool) {
 	t.Helper()
 	home := tempDir(t)

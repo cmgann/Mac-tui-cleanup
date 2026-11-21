@@ -140,7 +140,10 @@ func TestLiveGlobalCacheCleanup(t *testing.T) {
 			t.Fatalf("%s live cleanup: %+v", spec.key, rs)
 		}
 		cleaned++
-		t.Logf("LIVE CACHE CLEANUP PASSED: %s; usage before=%v after=%v; signed disk observation=%d", spec.key, rs[0].ProviderUsageBeforeBytes, rs[0].ProviderUsageAfterBytes, rs[0].DiskDeltaBytes)
+		if rs[0].ProviderUsageBeforeBytes == nil || rs[0].ProviderUsageAfterBytes == nil {
+			t.Fatal("cache usage measurements missing", rs)
+		}
+		t.Logf("LIVE CACHE CLEANUP PASSED: %s; usage before=%d after=%d; signed disk observation=%d", spec.key, *rs[0].ProviderUsageBeforeBytes, *rs[0].ProviderUsageAfterBytes, rs[0].DiskDeltaBytes)
 	}
 	if _, e = os.Stat(goEntry); !os.IsNotExist(e) {
 		t.Fatal("Go build cache entry remains")

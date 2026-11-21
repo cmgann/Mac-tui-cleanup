@@ -87,13 +87,13 @@ func (c *Caches) discover(ctx context.Context, spec cacheSpec) (storage.Candidat
 	}
 	path := ""
 	version := ""
-	if spec.key == "yarn" {
+	if spec.key == "yarn" || spec.key == "pnpm" {
 		out, e := c.Run.Run(ctx, exe, "--version")
 		if e != nil {
 			return storage.Candidate{}, e
 		}
 		version = strings.TrimSpace(out)
-		if !strings.HasPrefix(version, "1.") {
+		if spec.key == "yarn" && !strings.HasPrefix(version, "1.") {
 			return storage.Candidate{}, errors.New("Yarn 2+ project caches remain read-only; only Yarn Classic global cleanup is supported")
 		}
 	}
@@ -132,14 +132,14 @@ func (c *Caches) discover(ctx context.Context, spec cacheSpec) (storage.Candidat
 		candidate.ProtectionReason = "Incomplete cache measurement: " + e.Error()
 	}
 	if !candidate.Protected {
-		if e = c.validateTree(ctx, path); e != nil {
+		if e = c.validateTree(ctx, path, spec.key, version); e != nil {
 			candidate.Protected = true
 			candidate.ProtectionReason = e.Error()
 		}
 	}
 	candidate.Description = "Global tool-managed cache only. Individual review required. Packages/build products may need downloading or rebuilding. Source repositories, project node_modules, local .build directories and arbitrary custom paths are not cleanup targets. Commands execute in a private directory with the reviewed cache location fixed explicitly."
 	if spec.key == "pnpm" {
-		candidate.Description += " Prune removes only packages pnpm considers unreferenced; the entire store size is an upper-bound estimate."
+		candidate.Description += " Prune removes only packages pnpm considers unreferenced; the entire store size is an upper-bound estimate. Project registry links are not followed by the scanner. Ancillary metadata/DLX cleanup is confined to the private command directory."
 	}
 	if spec.key == "swift" {
 		candidate.Description += " Purges SwiftPM's global repository cache; other cache entries may remain."
@@ -197,7 +197,7 @@ func (c *Caches) allowedRoot(ctx context.Context, s cacheSpec, path, exe string)
 	}
 	return base, "Custom or project-local cache location is inspection-only; it is outside the supported global-cache policy"
 }
-func (c *Caches) validateTree(ctx context.Context, path string) error {
+func (c *Caches) validateTree(ctx context.Context, path, kind, version string) error {
 	real, e := filepath.EvalSymlinks(path)
 	if e != nil {
 		return e
@@ -240,6 +240,12 @@ func (c *Caches) validateTree(ctx context.Context, path string) error {
 			return e
 		}
 		if d.Type()&os.ModeSymlink != 0 {
+			// pnpm 10 registers projects with pointers. Prune reads these to
+			// preserve referenced packages; it only unlinks stale pointers.
+			// WalkDir never follows them. Other links still fail closed.
+			if kind == "pnpm" && strings.HasPrefix(version, "10.") && filepath.Dir(p) == filepath.Join(path, "projects") && registryHash(d.Name()) {
+				return nil
+			}
 			return fmt.Errorf("cache contains symlink: %s", p)
 		}
 		if d.Name() == ".git" || d.Name() == ".hg" || d.Name() == ".svn" {
@@ -343,7 +349,7 @@ func (c *Caches) prepare(ctx context.Context, candidate storage.Candidate) (cont
 		if e != nil || strings.TrimSpace(out) != candidate.Path {
 			return ctx, op, errors.New("pnpm store-dir does not resolve to the reviewed store")
 		}
-		op.Args = []string{"store", "prune", "--store-dir", base}
+		op.Args = []string{"store", "prune", "--store-dir", base, "--cache-dir", "."}
 		op.Candidate.ScopePaths = []string{base}
 	case "yarn":
 		if !strings.Contains(help, "clean") {
@@ -386,7 +392,7 @@ func (c *Caches) Clean(ctx context.Context, op storage.Operation) (storage.Resul
 	if strings.Join(expected.Args, "\x00") != strings.Join(op.Args, "\x00") {
 		return storage.Result{}, errors.New("cache operation scope changed")
 	}
-	if e = c.validateTree(ctx, op.Candidate.Path); e != nil {
+	if e = c.validateTree(ctx, op.Candidate.Path, op.Candidate.Metadata["cache"], op.Candidate.Metadata["version"]); e != nil {
 		return storage.Result{}, e
 	}
 	if e = storage.CheckCleanup(ctx); e != nil {
@@ -409,4 +415,17 @@ func (c *Caches) Clean(ctx context.Context, op storage.Operation) (storage.Resul
 		result.MeasurementErrors = append(result.MeasurementErrors, measurementErr.Error())
 	}
 	return result, e
+}
+
+// pnpm's short project hashes are 32 lowercase hexadecimal characters.
+func registryHash(name string) bool {
+	if len(name) != 32 {
+		return false
+	}
+	for _, r := range name {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
 }
