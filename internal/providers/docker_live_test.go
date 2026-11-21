@@ -179,7 +179,10 @@ func main(){if len(os.Args)>1&&os.Args[1]=="--read"{b,e:=os.ReadFile("/data/sent
 		t.Fatalf("live execution/measurements failed: %+v", records)
 	}
 	result := records[0]
-	if result.ProviderReportedBytes == nil || result.ProviderUsageBeforeBytes == nil || result.ProviderUsageAfterBytes == nil || *result.ProviderUsageBeforeBytes <= *result.ProviderUsageAfterBytes {
+	if result.ProviderReportedBytes == nil {
+		t.Fatalf("provider-reported cleanup bytes unavailable: %s", result.Output)
+	}
+	if result.ProviderUsageBeforeBytes == nil || result.ProviderUsageAfterBytes == nil || *result.ProviderUsageBeforeBytes <= *result.ProviderUsageAfterBytes {
 		t.Fatalf("live cache cleanup did not reduce usage: %+v", result)
 	}
 	untouchedAfter, e := d.cacheUsage(ctx, name, builders[1])

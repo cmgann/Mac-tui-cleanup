@@ -313,3 +313,18 @@ func TestBuildxHumanSizeJSON(t *testing.T) {
 		t.Fatal(total, reclaim, e)
 	}
 }
+
+func TestPruneReportedOutputFormats(t *testing.T) {
+	for output, want := range map[string]uint64{"Total reclaimed space: 1.5GB\n": 1500000000, "ID RECLAIMABLE SIZE\nfixture true 11.86MB\nTotal:\t11.86MB\n": 11860000, "Total:\t0B": 0} {
+		got, e := parsePruneReported(output, true)
+		if e != nil || got == nil || *got != want {
+			t.Fatal(output, got, e)
+		}
+	}
+	if got, e := parsePruneReported("Total: 1GB", false); got != nil || e != nil {
+		t.Fatal("unrelated total treated as reclamation")
+	}
+	if _, e := parsePruneReported("Total: invalid", true); e == nil {
+		t.Fatal("invalid report not surfaced")
+	}
+}

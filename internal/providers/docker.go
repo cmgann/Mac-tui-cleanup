@@ -388,12 +388,10 @@ func (d *Docker) Clean(ctx context.Context, op storage.Operation) (storage.Resul
 			r.ProviderUsageAfterBytes = &n
 		}
 	}
-	for _, line := range strings.Split(out, "\n") {
-		if _, v, ok := strings.Cut(line, "Total reclaimed space:"); ok {
-			if n, err := ParseSize(strings.TrimSpace(v)); err == nil {
-				r.ProviderReportedBytes = &n
-			}
-		}
+	var reportErr error
+	r.ProviderReportedBytes, reportErr = parsePruneReported(out, c.Category == "BuildKit")
+	if reportErr != nil {
+		r.MeasurementErrors = append(r.MeasurementErrors, reportErr.Error())
 	}
 	return r, e
 }
@@ -429,4 +427,24 @@ func (d *Docker) cacheUsage(ctx context.Context, name, builder string) (uint64, 
 	}
 	n, _, e := CacheBytes(rows, 0)
 	return n, e
+}
+
+func parsePruneReported(output string, buildkit bool) (*uint64, error) {
+	var reported *uint64
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		value, ok := strings.CutPrefix(line, "Total reclaimed space:")
+		if !ok && buildkit {
+			value, ok = strings.CutPrefix(line, "Total:")
+		}
+		if !ok {
+			continue
+		}
+		n, e := ParseSize(strings.TrimSpace(value))
+		if e != nil {
+			return nil, fmt.Errorf("cannot parse provider-reported reclaimed space %q: %w", value, e)
+		}
+		reported = &n
+	}
+	return reported, nil
 }
