@@ -212,7 +212,7 @@ func main(){if len(os.Args)>1&&os.Args[1]=="--read"{b,e:=os.ReadFile("/data/sent
 		t.Fatalf("live cleanup history missing: %+v %v", history, e)
 	}
 	t.Logf("Observed signed filesystem change: %d bytes; estimates and provider-reported measurements persisted separately", result.DiskDeltaBytes)
-	t.Logf("LIVE VALIDATION PASSED: cache %d -> %d bytes; other builder %d -> %d; selected stopped container and unused image removed; running container/image and database volume sentinel preserved. Provider-reported bytes: %v", *result.ProviderUsageBeforeBytes, *result.ProviderUsageAfterBytes, untouchedBefore, untouchedAfter, result.ProviderReportedBytes)
+	t.Logf("LIVE VALIDATION PASSED: cache %d -> %d bytes; other builder %d -> %d; selected stopped container and unused image removed; running container/image and database volume sentinel preserved. Provider-reported bytes: %d", *result.ProviderUsageBeforeBytes, *result.ProviderUsageAfterBytes, untouchedBefore, untouchedAfter, *result.ProviderReportedBytes)
 }
 
 // Tests use real host filesystem measurements even though the interactive

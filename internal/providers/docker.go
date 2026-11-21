@@ -69,6 +69,9 @@ func CacheBytes(rows []CacheEntry, days int) (uint64, uint64, error) {
 		}
 		n, e := strconv.ParseUint(s, 10, 64)
 		if e != nil {
+			n, e = ParseSize(s)
+		} // recent Buildx JSON renders human-size strings
+		if e != nil {
 			return 0, 0, fmt.Errorf("invalid cache size %q", s)
 		}
 		if seen[v.ID] {

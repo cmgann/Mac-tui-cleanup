@@ -28,7 +28,7 @@ The live test:
 2. Creates two uniquely named `docker-container` builders without changing the selected builder/context.
 3. Builds throwaway images from a local static Go fixture, producing real cache in each builder.
 4. Creates a running container, a stopped container, an unused image, and a labeled database-named volume containing a sentinel.
-5. Scans both builders and verifies real reclaimable bytes, protected running resources and protected persistent volumes.
+5. Scans both builders and verifies real reclaimable bytes (including numeric and human-size Buildx JSON formats), protected running resources and protected persistent volumes.
 6. Uses the application's planning/execution/history path to prune only its first builder. It asserts decreased provider usage, parsed provider-reported reclaimed bytes, a valid signed filesystem observation, and unchanged bytes in the second builder.
 7. Removes only its selected stopped container and unused image, and verifies their absence.
 8. Verifies that the running container, its referenced image and database volume remain, with the sentinel contents unchanged. It checks the three persisted history records.

@@ -299,3 +299,17 @@ func tempDir(t *testing.T) string {
 	}
 	return p
 }
+
+func TestBuildxHumanSizeJSON(t *testing.T) {
+	rows, e := DecodeObjects[CacheEntry](`{"ID":"context","Size":"4.096kB","Reclaimable":true,"Shared":false}
+{"ID":"layer","Size":"1.5MB","Reclaimable":true,"Shared":false}
+{"ID":"bytes","Size":"1000","Reclaimable":true,"Shared":false}
+{"ID":"numeric","Size":2000,"Reclaimable":false}`)
+	if e != nil {
+		t.Fatal(e)
+	}
+	total, reclaim, e := CacheBytes(rows, 0)
+	if e != nil || total != 1507096 || reclaim != 1505096 {
+		t.Fatal(total, reclaim, e)
+	}
+}
