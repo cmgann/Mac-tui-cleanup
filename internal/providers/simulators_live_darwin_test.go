@@ -158,7 +158,38 @@ func TestLiveSimulatorCleanup(t *testing.T) {
 	t.Logf("LIVE SIMULATOR VALIDATION PASSED: selected device deleted via simctl; second device preserved; private device set %s; signed disk change %d; %d live output events captured. No runtime image deleted.", set, records[0].DiskDeltaBytes, outputEvents)
 	// Probe current installed runtime JSON read-only, so compatibility failures are
 	// visible in CI without ever downloading or deleting a system runtime.
-	if text, e := r.Run(ctx, tool, "runtime", "list", "--json"); e == nil {
-		t.Logf("Managed runtime JSON sample: %.2000s", text)
+	helpRuntime, e := runner.Combined(ctx, r, tool, "help", "runtime")
+	if e != nil || !strings.Contains(helpRuntime, "delete") || !strings.Contains(helpRuntime, "--dry-run") {
+		t.Fatalf("installed runtime deletion/dry-run capability unavailable: %v\n%s", e, helpRuntime)
 	}
+	images, e := s.images(ctx, tool)
+	if e != nil {
+		t.Fatal(e)
+	}
+	probeID := ""
+	for _, image := range images {
+		if image.Deletable != nil && *image.Deletable && managedRuntimeKind(image.Kind) {
+			probeID = image.Identifier
+			break
+		}
+	}
+	if probeID == "" {
+		t.Fatal("live runtime capability validation requires a managed deletable runtime image")
+	}
+	dry, e := runner.Combined(ctx, r, tool, "--set", set, "runtime", "delete", probeID, "--dry-run")
+	if e != nil {
+		t.Fatalf("installed runtime dry-run failed: %v %s", e, dry)
+	}
+	after, e := s.images(ctx, tool)
+	if e != nil {
+		t.Fatal(e)
+	}
+	found := false
+	for _, image := range after {
+		found = found || image.Identifier == probeID
+	}
+	if !found {
+		t.Fatal("dry-run unexpectedly removed a runtime image")
+	}
+	t.Logf("LIVE RUNTIME CAPABILITY VALIDATION PASSED: managed-image JSON recognized; target-specific dry-run supported; runtime still present. Dry-run output: %s", dry)
 }

@@ -264,7 +264,7 @@ func (s *Simulators) runtimeCandidate(tool string, r SimImage, profiles []SimPro
 	if s.DeviceSet != "" {
 		c.Protected = true
 		c.ProtectionReason = "Runtime deletion requires the standard device set to check references"
-	} else if r.Deletable == nil || !*r.Deletable || r.Kind != "Disk Image" || (r.State != "Ready" && r.State != "Unusable") {
+	} else if r.Deletable == nil || !*r.Deletable || !managedRuntimeKind(r.Kind) || (r.State != "Ready" && r.State != "Unusable") {
 		c.Protected = true
 		c.ProtectionReason = "Tool does not explicitly identify this managed disk image as deletable"
 	} else if profile == "" {
@@ -493,4 +493,12 @@ func (s *Simulators) guard(ctx context.Context, c storage.Candidate) error {
 		}
 	}
 	return errors.New("runtime disappeared before deletion")
+}
+
+func managedRuntimeKind(kind string) bool {
+	switch kind {
+	case "Disk Image", "Patchable Cryptex Disk Image":
+		return true
+	}
+	return false
 }

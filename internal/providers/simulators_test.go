@@ -273,3 +273,25 @@ func TestSimulatorActivityDuringCapabilityCheckBlocksDeletion(t *testing.T) {
 		t.Fatal("device booted during capability check but was deleted")
 	}
 }
+
+func TestPatchableCryptexRuntimeUsesSupportedCleanup(t *testing.T) {
+	s, _, _, image, removed := simFixture(t)
+	*removed = true
+	image.Kind = "Patchable Cryptex Disk Image"
+	cs, e := s.Scan(context.Background())
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(cs) != 1 || cs[0].Protected {
+		t.Fatal("managed Cryptex image was not recognized", cs)
+	}
+	c := cs[0]
+	c.Reviewed = true
+	op, e := s.Plan(context.Background(), c, 0)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.Clean(context.Background(), op); e != nil || image.Identifier != "" {
+		t.Fatal("supported Cryptex runtime cleanup failed", e)
+	}
+}
