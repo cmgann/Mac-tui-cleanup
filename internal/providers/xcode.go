@@ -18,6 +18,7 @@ type Xcode struct {
 	Run                 runner.Runner
 	SystemSimulatorRoot string
 	Devices             DeviceSource
+	Simulators          *Simulators
 }
 
 func (*Xcode) ID() string { return "Xcode" }
@@ -111,14 +112,23 @@ func (x *Xcode) Scan(ctx context.Context) ([]storage.Candidate, error) {
 		}
 		cs = append(cs, storage.Candidate{ID: "xcode:" + item.path, Provider: x.ID(), Category: item.category, Name: item.category, Path: item.path, EstimatedBytes: n, Protected: true, ProtectionReason: "Inspection only. Archives contain release builds and dSYMs; simulator runtimes must be managed by supported Xcode tools."})
 	}
-	// Read-only tool discovery. Failure does not block directory analysis.
-	for _, args := range [][]string{{"simctl", "list", "devices", "unavailable", "--json"}, {"simctl", "list", "runtimes", "--json"}} {
-		out, e := x.Run.Run(ctx, "xcrun", args...)
+	if x.Simulators != nil {
+		rows, e := x.Simulators.Scan(ctx)
+		cs = append(cs, rows...)
 		if e != nil {
 			errs = append(errs, e)
-			continue
 		}
-		cs = append(cs, storage.Candidate{ID: "xcode:tool:" + strings.Join(args, "/"), Provider: x.ID(), Category: "Simulator inventory", Name: strings.Join(args[2:], " "), Description: out, Protected: true, ProtectionReason: "Inspection only; no runtime bundles are deleted"})
+	} else {
+		// Read-only tool discovery. Failure does not block directory analysis.
+		for _, args := range [][]string{{"simctl", "list", "devices", "unavailable", "--json"}, {"simctl", "list", "runtimes", "--json"}} {
+			out, e := x.Run.Run(ctx, "xcrun", args...)
+			if e != nil {
+				errs = append(errs, e)
+				continue
+			}
+			cs = append(cs, storage.Candidate{ID: "xcode:tool:" + strings.Join(args, "/"), Provider: x.ID(), Category: "Simulator inventory", Name: strings.Join(args[2:], " "), Description: out, Protected: true, ProtectionReason: "Inspection only; no runtime bundles are deleted"})
+		}
+
 	}
 	return cs, errors.Join(errs...)
 }
@@ -132,6 +142,9 @@ func (x *Xcode) cleanupRoot(c storage.Candidate) (string, error) {
 	return "", errors.New("unsupported Xcode cleanup category")
 }
 func (x *Xcode) Plan(ctx context.Context, c storage.Candidate, _ int) (storage.Operation, error) {
+	if x.Simulators != nil && (c.Category == simulatorDevices || c.Category == simulatorRuntimes) {
+		return x.Simulators.Plan(ctx, c, 0)
+	}
 	root, e := x.cleanupRoot(c)
 	if e != nil {
 		return storage.Operation{}, e
@@ -166,6 +179,9 @@ func (x *Xcode) Plan(ctx context.Context, c storage.Candidate, _ int) (storage.O
 	return storage.Operation{Candidate: c, Scope: "Permanently delete reviewed " + c.Category + ": " + c.Path, Warning: fmt.Sprintf("Permanent deletion. OS %s, build %s. Historical device support may be required to symbolize older crash reports. Recent (<30 days): %t. A fresh physical-device check passed using %s. Close Xcode and xcodebuild; pins and connected-device protections cannot be overridden.", details.Version, details.Build, details.Recent, strings.Join(inventory.Sources, ", "))}, nil
 }
 func (x *Xcode) Clean(ctx context.Context, op storage.Operation) (storage.Result, error) {
+	if x.Simulators != nil && (op.Candidate.Category == simulatorDevices || op.Candidate.Category == simulatorRuntimes) {
+		return x.Simulators.Clean(ctx, op)
+	}
 	c := op.Candidate
 	if _, e := x.Plan(ctx, c, 0); e != nil {
 		return storage.Result{}, e
@@ -206,7 +222,7 @@ func (x *Xcode) Clean(ctx context.Context, op storage.Operation) (storage.Result
 }
 
 func (x *Xcode) ensureXcodeClosed(ctx context.Context) error {
-	out, e := x.Run.Run(ctx, "/bin/ps", "-axo", "comm=")
+	out, e := x.Run.Run(runner.WithoutOutput(ctx), "/bin/ps", "-axo", "comm=")
 	if e != nil {
 		return fmt.Errorf("cannot check active Xcode processes: %w", e)
 	}

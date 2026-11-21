@@ -51,6 +51,8 @@ with tempfile.TemporaryDirectory(prefix="devclean-runtime-") as temporary:
     process = subprocess.Popen([binary], stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True)
     os.close(slave)
     output = bytearray()
+    phase = "scan"
+    settings_path = home / "Library/Application Support/devclean/settings.json"
     sent_quit = False
     sent_cancel = False
     dashboard_seen_at = None
@@ -72,12 +74,26 @@ with tempfile.TemporaryDirectory(prefix="devclean-runtime-") as temporary:
             # this state verifies that their failures leave a working TUI.
             if dashboard_seen_at is None and b"DISK OVERVIEW" in output:
                 dashboard_seen_at = time.monotonic()
-            if not sent_cancel and dashboard_seen_at is not None and time.monotonic() - dashboard_seen_at > 0.5:
+            if phase == "scan" and not sent_cancel and dashboard_seen_at is not None and time.monotonic() - dashboard_seen_at > 0.5:
                 os.write(master, b"\x1b")
                 sent_cancel = True
-            if not sent_quit and (b"Scan finished with warnings" in output or b"Scan canceled; partial results" in output):
+            if phase == "scan" and (b"Scan finished with warnings" in output or b"Scan canceled; partial results" in output):
+                os.write(master, b"f")
+                phase = "filters"
+            elif phase == "filters" and b"CLEANUP FILTERS" in output:
+                os.write(master, b"\x13")  # Ctrl+S applies/persists filters
+                phase = "filter-save"
+            elif phase == "filter-save" and b"Filters saved" in output:
+                os.write(master, b"s")
+                phase = "settings"
+            elif phase == "settings" and b"PREFERENCES" in output:
+                os.write(master, b"\r")  # Default row cycles BuildKit 30 -> 7 days
+                phase = "settings-save"
+            elif phase == "settings-save" and b"Preferences saved" in output:
+                assert json.loads(settings_path.read_text())["CacheAgeDays"] == 7
                 os.write(master, b"q")
                 sent_quit = True
+                phase = "quit"
             if process.poll() is not None:
                 break
         if not sent_quit:
@@ -88,7 +104,7 @@ with tempfile.TemporaryDirectory(prefix="devclean-runtime-") as temporary:
             raise RuntimeError("native TUI dashboard was not rendered")
         assert (derived / "fixture-cache").exists() and (support / "fixture-cache").exists()
         assert not (home / "Library/Application Support/devclean/history.json").exists()
-        print("Native CLI + PTY smoke passed: real disk statistics, fixture discovery, device-service fail-closed protection, asynchronous scan/cancellation, Q exit, no startup deletion.")
+        print("Native CLI + PTY smoke passed: real disk statistics, fixture discovery, device-service fail-closed protection, asynchronous scan/cancellation, persistent filters/preferences, Q exit, no startup deletion.")
     finally:
         if process.poll() is None:
             process.kill()

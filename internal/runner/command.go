@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -43,8 +44,14 @@ func (Exec) Run(ctx context.Context, name string, args ...string) (string, error
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.Env = append(os.Environ(), "HOMEBREW_NO_AUTO_UPDATE=1", "HOMEBREW_NO_ANALYTICS=1", "LC_ALL=C")
 	var out, stderr limited
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
+	emit, _ := ctx.Value(outputKey{}).(func(OutputEvent))
+	command := name + " " + strings.Join(args, " ")
+	var outputMu sync.Mutex
+	cmd.Stdout = streamCapture{destination: &out, emit: emit, stream: "stdout", command: command, mu: &outputMu}
+	cmd.Stderr = streamCapture{destination: &stderr, emit: emit, stream: "stderr", command: command, mu: &outputMu}
+	if emit != nil {
+		emit(OutputEvent{Kind: "command", Command: command})
+	}
 	err := cmd.Run()
 	s := out.b.String()
 	if err != nil {

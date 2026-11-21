@@ -17,7 +17,7 @@ import (
 func key(s string) tea.KeyPressMsg { return tea.KeyPressMsg{Code: []rune(s)[0], Text: s} }
 func TestSelectionProtectionAndReview(t *testing.T) {
 	m := New(&storage.Engine{}, config.Settings{CacheAgeDays: 30}, "unused")
-	m.snapshot.Candidates = []storage.Candidate{{ID: "a", Provider: "Docker", Reclaimable: true}, {ID: "b", Provider: "Docker", Protected: true, Reclaimable: true}}
+	m.snapshot.Candidates = []storage.Candidate{{ID: "a", Provider: "Docker", Reclaimable: true, Risk: storage.Low}, {ID: "b", Provider: "Docker", Protected: true, Reclaimable: true}}
 	updated, _ := m.Update(key("a"))
 	m = updated.(Model)
 	if !m.snapshot.Candidates[0].Selected || m.snapshot.Candidates[1].Selected {
@@ -179,5 +179,66 @@ func TestDeviceSupportRequiresIndividualReviewAndSelection(t *testing.T) {
 	m = u.(Model)
 	if m.snapshot.Candidates[0].Reviewed || m.snapshot.Candidates[0].Selected {
 		t.Fatal("review or selection persisted across rescan")
+	}
+}
+
+func TestFiltersDeselectHiddenItemsAndKeepHighRiskManual(t *testing.T) {
+	m := New(&storage.Engine{}, config.Defaults(), filepath.Join(t.TempDir(), "settings.json"))
+	m.category = "Xcode"
+	m.page = "candidates"
+	m.filterReturn = "candidates"
+	m.snapshot.Candidates = []storage.Candidate{{ID: "small", Provider: "Xcode", Reclaimable: true, Selected: true, EstimatedBytes: 1000, Risk: storage.Low}, {ID: "large", Provider: "Xcode", Reclaimable: true, Selected: true, EstimatedBytes: 2000000000, Risk: storage.High}}
+	m.filterDraft = m.settings.Filter
+	m.filterDraft.MinBytes = 1000000000
+	_ = m.applyFilters()
+	select {
+	case msg := <-m.events:
+		u, _ := m.Update(msg)
+		m = u.(Model)
+	case <-time.After(3 * time.Second):
+		t.Fatal("filter save blocked")
+	}
+	if m.snapshot.Candidates[0].Selected || !m.snapshot.Candidates[1].Selected || len(m.indices()) != 1 {
+		t.Fatal("hidden selection survived", m.snapshot.Candidates)
+	}
+	m.snapshot.Candidates[1].Selected = false
+	u, _ := m.Update(key("a"))
+	m = u.(Model)
+	if m.snapshot.Candidates[1].Selected {
+		t.Fatal("high-risk item bulk selected")
+	}
+	u, _ = m.Update(key(" "))
+	m = u.(Model)
+	if !m.snapshot.Candidates[1].Selected {
+		t.Fatal("explicit high-risk selection blocked")
+	}
+	loaded, e := config.Load(m.settingsPath)
+	if e != nil || loaded.Filter.MinBytes != 1000000000 {
+		t.Fatal(loaded, e)
+	}
+}
+func TestLiveProgressRenderingAndRescanCancellation(t *testing.T) {
+	m := New(&storage.Engine{}, config.Defaults(), "")
+	m.busy = true
+	m.page = "progress"
+	m.cancel = func() {}
+	send := func(msg tea.Msg) { u, _ := m.Update(msg); m = u.(Model) }
+	send(cleanupProgressMsg(storage.ProgressEvent{Kind: "operation", Name: "Fixture operation", Index: 1, Total: 2}))
+	send(cleanupProgressMsg(storage.ProgressEvent{Kind: "command", Text: "tool delete fixture", Total: 2}))
+	send(cleanupProgressMsg(storage.ProgressEvent{Kind: "output", Text: "live-output\n\x1b]52;c;dGVzdA==\a", Total: 2}))
+	send(cleanupProgressMsg(storage.ProgressEvent{Kind: "finished", Name: "Fixture operation", Status: "failed", Completed: 1, Failed: 1, Total: 2}))
+	view := m.View().Content
+	if !strings.Contains(view, "live-output") || !strings.Contains(view, "Failed 1") || strings.Contains(view, "\x1b]52") {
+		t.Fatal("invalid live output rendering", view)
+	}
+	send(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if m.outputOffset == 0 {
+		t.Fatal("live output cannot scroll")
+	}
+	canceled := false
+	send(phaseMsg{status: "Rescanning", cancel: func() { canceled = true }})
+	send(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if !canceled {
+		t.Fatal("rescan cancellation used stale cleanup context")
 	}
 }

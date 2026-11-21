@@ -61,7 +61,7 @@ func run() error {
 		return fmt.Errorf("settings: %w", err)
 	}
 	exec := runner.Exec{}
-	e := &storage.Engine{Home: home, History: h, Providers: []storage.Provider{&providers.Docker{Run: exec}, &providers.Xcode{Home: home, Run: exec, SystemSimulatorRoot: "/Library/Developer/CoreSimulator"}, &providers.Homebrew{Run: exec}, &providers.Caches{Home: home, Run: exec}}}
+	e := &storage.Engine{Home: home, History: h, Providers: []storage.Provider{&providers.Docker{Run: exec}, &providers.Xcode{Home: home, Run: exec, SystemSimulatorRoot: "/Library/Developer/CoreSimulator", Simulators: &providers.Simulators{Home: home, Run: exec}}, &providers.Homebrew{Run: exec}, &providers.Caches{Home: home, Run: exec}}}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if *scan {

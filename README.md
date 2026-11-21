@@ -32,7 +32,7 @@ devclean --export-history       # History JSON on stdout
 devclean --version
 ```
 
-The terminal starts with a read-only scan. Missing tools and permission failures appear as scan warnings; other providers continue. Scans have per-provider timeouts. Measurements are real, with no sample values. Ordinary terminal emulators work; use at least 32 columns and 14 rows. An 80×28 terminal gives the dashboard more room.
+The terminal starts with a read-only scan. Filters affect the TUI and selection; `--scan` always exports the full raw inventory. Missing tools and permission failures appear as scan warnings; other providers continue. Scans have per-provider timeouts. Measurements are real, with no sample values. Ordinary terminal emulators work; use at least 32 columns and 14 rows. An 80×28 terminal gives the dashboard more room.
 
 ## Keyboard workflow
 
@@ -41,13 +41,14 @@ The terminal starts with a read-only scan. Missing tools and permission failures
 | Up/Down, j/k | Navigate; scroll details, review, history, warnings |
 | Enter | Open category/details; advance from review |
 | Space | Select candidate, or toggle eligible candidates in a category |
-| A | Select eligible candidates in current view |
+| A | Select visible eligible candidates within the bulk risk ceiling |
 | C | Prepare and review the exact cleanup plan |
 | R | Rescan |
 | W | Open full scan warnings |
 | H / E | History / export history from history screen |
-| S / Enter | Settings / cycle BuildKit age policy |
-| V | Individually review a device-support folder; type REVIEW to acknowledge |
+| S / ↑↓ / Enter | Preferences / choose field / cycle and save |
+| F or / | Edit persistent cleanup filters; Ctrl+S applies and saves |
+| V | Individually review device support or a simulator resource; type REVIEW to acknowledge |
 | P | Pin or unpin a candidate; rescan after unpinning |
 | O / T | Sort candidate list by size / modification time |
 | PgUp/PgDn | Scroll long views |
@@ -56,14 +57,14 @@ The terminal starts with a read-only scan. Missing tools and permission failures
 
 Select candidates, press **C**, read the paths, Docker context/builder and command arguments, then press Enter. A second screen requires typing **DELETE** and pressing Enter. Pressing C alone never deletes anything. Close Xcode and `xcodebuild` before DerivedData cleanup.
 
-During cleanup the spinner shows the current operation and elapsed time, without an invented percentage. Esc cancels the running command or filesystem traversal and prevents subsequent operations. Cancellation cannot undo completed work. Results include failures and operations that did not start. The app rescans after cleanup, including partial cleanup. Process termination requests cancel active work and wait for local history persistence before exiting when possible; force-killing the process cannot provide that guarantee.
+During cleanup the spinner shows the current resource, elapsed time, completed/successful/failed operation counts, and live stdout/stderr. Tab switches between command output and completed operations; PgUp/PgDn scrolls and End follows the latest output. There is no invented percentage. Output is bounded, and each history record retains the latest 64 KiB transcript. Noisy physical-device inventories and process checks are not streamed into cleanup history. Esc cancels the running command or filesystem traversal and prevents subsequent operations. Cancellation cannot undo completed work. Results include failures and operations that did not start. The app rescans after cleanup, including partial cleanup. Process termination requests cancel active work and wait for local history persistence before exiting when possible; force-killing the process cannot provide that guarantee.
 
 ## Supported scope
 
 | Provider | Inspection | Cleanup |
 | --- | --- | --- |
 | Docker | Context, `system df`, each builder, cache, images, container writable layers, volume names | Individual local single-node builders; individual unused images; individual stopped containers |
-| Xcode | Individual DerivedData projects; iOS/watchOS/tvOS/visionOS/macOS device-support folders; archives; user/system CoreSimulator; unavailable devices and installed runtimes through `simctl` | DerivedData projects; individually reviewed device-support folders with fresh device checks |
+| Xcode | Individual DerivedData projects; iOS/watchOS/tvOS/visionOS/macOS device-support folders; archives; user/system CoreSimulator; unavailable devices and installed runtimes through `simctl` | DerivedData projects; reviewed device-support folders; individually reviewed shutdown simulators; unused, explicitly deletable managed runtime images where supported |
 | Homebrew | Executable-discovered prefix/cache sizes; `cleanup --dry-run` output and savings when reported | Supported `brew cleanup`; scope is rechecked against reviewed dry-run output |
 | Other developer tools | Tool-discovered Go build/module caches, npm cache, pnpm store, Yarn cache; standard SwiftPM cache | Read-only |
 
@@ -76,13 +77,20 @@ Docker images are checked for container references immediately before removal. S
 - All volumes are inspection-only, including anonymous volumes. There is no volume deletion command. Database data is never intentionally targeted. Volume sizes/reference information is shown only where the Docker overview reports it; individual volume inspection is limited to names.
 - Remote Docker contexts, remote drivers, and multi-node builders cannot be cleaned in this release. Unset `DOCKER_HOST`, `DOCKER_CONTEXT`, and `BUILDX_BUILDER` overrides to use Docker scanning. The context, endpoint, builder driver, and node identity are revalidated before cleanup. Aliases of the same supported cache store are not counted twice.
 - Device support uses both supported Xcode inventories: `xcdevice list` JSON (including older devices) and `devicectl list devices --json-output` (CoreDevice). Known physical devices, including locked or unavailable devices, protect matching platform/version or build. Simulators do not authorize removing physical-device support. Unknown device versions/platforms, malformed output, missing tools and service failures block support cleanup. The newest-folder heuristic is never used.
-- Device-support folders show parsed platform, OS version, build, model identifier when encoded in the folder name, size, modification time, and inventory sources. Each folder, including recent entries, requires **V → type REVIEW → Enter**, then individual Space selection. Category toggles and A never select device support, even after review. Review acknowledgement expires on rescan. Historical support files may be needed to symbolize older crash reports; pin folders you need to retain.
-- Cleanup planning and execution query fresh inventories, with another check after tree measurement immediately before deletion. A new device, service failure, changed folder, pin, running Xcode or running `xcodebuild` blocks deletion. Both device utilities must work for device-support cleanup (current Xcode toolchains); older/unsupported toolchains remain read-only for device support. Unfamiliar future CoreDevice schemas fail closed. Archive, UserData and signing directories are not eligible roots.
-- Archives, release dSYMs, signing assets, provisioning profiles, Xcode UserData, simulator data and runtime bundles remain read-only. Simulator deletion through `simctl` is not implemented yet. No runtime bundles are removed directly.
+- Device-support folders show parsed platform, OS version, build, model identifier when encoded in the folder name, size, modification time, and inventory sources. Each folder, including recent entries, requires **V → type REVIEW → Enter**, then individual Space selection. Category toggles and A never select device support or simulator resources, even after review. Review acknowledgement expires on rescan. Historical support files may be needed to symbolize older crash reports; pin folders you need to retain.
+- Cleanup planning and execution query fresh inventories, with another check after tree measurement immediately before deletion. A new device, service failure, changed folder, pin, running Xcode or running `xcodebuild` blocks deletion. Both physical-device utilities must work for device-support cleanup (current Xcode toolchains); older/unsupported toolchains remain read-only for device support. Unfamiliar future CoreDevice schemas fail closed. Archive, UserData and signing directories are not eligible roots.
+- Archives, release dSYMs, signing assets, provisioning profiles and Xcode UserData remain read-only. Individual shutdown simulators can be deleted through `simctl delete UUID` after review, including unavailable devices. This permanently loses their installed apps, test databases, settings and logs. Booted, transitional, unrecognized or changed devices remain protected. The app never automatically shuts down or erases a simulator.
+- Managed runtime images can be removed only when `simctl runtime list --json` explicitly reports a deletable disk image, its installed runtime mapping is unambiguous, and no device references it. Installed capability help and a target-specific dry run must succeed before the plan is offered. Both device and runtime inventories are rechecked before execution. Runtime cleanup uses only `simctl runtime delete UUID`; runtime bundles, mounts and assets are never removed directly. Unsupported formats, permissions, capabilities or busy resources produce visible errors/read-only candidates. Tools are revalidated and an explicit device-set argument prevents context drift. No `delete all` or `delete unavailable` bulk command is used.
 - Filesystem cleanup is limited to direct children of the current user's standard DerivedData and explicitly enumerated platform DeviceSupport roots. Roots, parent paths, symlinked cleanup roots, repositories, special files, changed directories, and mount crossings are rejected. Open directory handles and Go `os.Root` constrain traversal during deletion. Do not concurrently move or modify directories being cleaned.
 - Filesystem cleanup uses **permanent deletion**, with the separate typed confirmation. Trash support is not implemented. There is no claim that moving to Trash recovers space.
 - Additional caches, source repositories, `node_modules`, and module contents are not deletion targets.
 - Default tests use temporary filesystem trees and fake commands. The separately opted-in integration suite cleans only its own resources on an isolated, disposable real Docker daemon. No real developer files or existing Docker resources are cleanup targets.
+
+## Cleanup filters and preferences
+
+F (or /) opens a keyboard-operated filter editor. Up/Down chooses a field and Enter edits/cycles it. Ctrl+S applies and persists; Esc cancels; X resets the draft. Available filters are text search, category text, minimum estimated/measured size, last-modified age, maximum cleanup risk, visibility (all / actionable / eligible), and size/name/date/risk sorting. Unknown dates do not pass an age threshold, and unknown/zero estimates do not pass a positive size threshold. Applying a filter deselects candidates it hides, so hidden selections cannot silently remain in a cleanup plan. Device support and simulator resources still need individual review.
+
+S opens preferences for BuildKit age policy, the bulk-selection risk ceiling (medium by default), displayed output retention (50/100/200 wrapped lines), and live-output visibility. These persist alongside pins and filters. A higher-risk item can still be individually selected when visible. Changing display preferences never bypasses protection or confirmation. Disabling live-output display does not disable the bounded per-operation history transcript. Live chunks may be coalesced under heavy output; operation boundaries and final results remain reliable.
 
 ## Understanding the numbers
 
@@ -116,7 +124,7 @@ make vet
 make release
 ```
 
-Tests use temporary trees and fake command responses. Coverage includes physical-device inventories, per-folder review, connected-device changes, unavailable device services at the deletion boundary, JSON parsing, shared-cache accounting, protected selection, cleanup planning, path traversal, symlinks, changed/disappeared targets, active resources, context changes, Homebrew dry-run changes, canceled/partial cleanup, signed disk changes, JSON persistence, locks, terminal sanitization, and resizing. CI explicitly verifies native Apple Silicon hardware (`hw.optional.arm64=1`) and Go runtime architecture, runs the tests on both Apple Silicon and Intel macOS, and executes the actual binary in an isolated terminal. A separate disposable Docker job runs real cleanup and verifies preserved data. See [validation procedures](docs/validation.md) and [CI runs](https://github.com/cmgann/Mac-tui-cleanup/actions).
+Tests use temporary trees and fake command responses. Coverage includes physical-device inventories, per-folder review, connected-device changes, unavailable device services at the deletion boundary, JSON parsing, shared-cache accounting, protected selection, cleanup planning, path traversal, symlinks, changed/disappeared targets, active resources, context changes, Homebrew dry-run changes, canceled/partial cleanup, signed disk changes, JSON persistence, locks, terminal sanitization, and resizing. CI explicitly verifies native Apple Silicon hardware (`hw.optional.arm64=1`) and Go runtime architecture, runs the tests on both Apple Silicon and Intel macOS, and executes the actual binary in an isolated terminal. A separate disposable Docker job runs real cleanup and verifies preserved data. Another native macOS job creates devices in a private simulator set, deletes only its reviewed fixture through the application engine, and verifies a second device remains. See [validation procedures](docs/validation.md) and [CI runs](https://github.com/cmgann/Mac-tui-cleanup/actions).
 
 Architecture: `cmd/devclean` assembles the app; `internal/tui` owns asynchronous messages/rendering; `internal/storage` handles candidates, plans, constrained filesystem operations, measurements and history; `internal/providers` implements tool behavior; `internal/runner` executes fixed programs with argument arrays, contexts, process-group cancellation and bounded output; `internal/config` persists preferences. No shell command strings are executed.
 

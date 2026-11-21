@@ -138,6 +138,7 @@ func ParseCoreDevices(data []byte) ([]AppleDevice, error) {
 	return devices, nil
 }
 func (d XcodeDevices) Discover(ctx context.Context) (DeviceInventory, error) {
+	ctx = runner.WithoutOutput(ctx)
 	inventory := DeviceInventory{At: time.Now()}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

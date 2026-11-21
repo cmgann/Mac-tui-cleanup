@@ -25,6 +25,7 @@ type Record struct {
 	Success                                           bool
 	Errors                                            []string
 	Output                                            string
+	CommandOutput                                     string
 }
 type History struct{ Path string }
 

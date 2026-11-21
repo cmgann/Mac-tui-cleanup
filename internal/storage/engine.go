@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/cmgann/Mac-tui-cleanup/internal/runner"
 )
 
 type Engine struct {
@@ -89,6 +93,13 @@ func (e *Engine) provider(id string) Provider {
 
 // Execute is called only after the TUI's review and typed DELETE confirmation.
 func (e *Engine) Execute(ctx context.Context, ops []Operation, progress func(string)) []Record {
+	return e.ExecuteProgress(ctx, ops, func(event ProgressEvent) {
+		if event.Kind == "operation" {
+			progress(fmt.Sprintf("%d/%d · %s", event.Index, event.Total, event.Name))
+		}
+	})
+}
+func (e *Engine) ExecuteProgress(ctx context.Context, ops []Operation, progress func(ProgressEvent)) []Record {
 	var rs []Record
 	unlock, lockErr := FileLock(e.History.Path + ".cleanup.lock")
 	if lockErr != nil {
@@ -98,11 +109,39 @@ func (e *Engine) Execute(ctx context.Context, ops []Operation, progress func(str
 	if _, err := e.History.Load(); err != nil {
 		return []Record{{Timestamp: time.Now(), Errors: []string{err.Error()}}}
 	}
+	completed, failed := 0, 0
 	for i, op := range ops {
 		if ctx.Err() != nil {
 			break
 		}
-		progress(fmt.Sprintf("%d/%d · %s", i+1, len(ops), op.Candidate.Name))
+		event := ProgressEvent{Kind: "operation", Provider: op.Candidate.Provider, CandidateID: op.Candidate.ID, Name: op.Candidate.Name, Index: i + 1, Total: len(ops), Completed: completed, Failed: failed, At: time.Now()}
+		progress(event)
+		var outputMu sync.Mutex
+		var commandOutput string
+		truncated := false
+		operationCtx := runner.WithOutput(ctx, func(out runner.OutputEvent) {
+			outputMu.Lock()
+			defer outputMu.Unlock()
+			text := out.Text
+			if out.Kind == "command" {
+				text = out.Command + "\n"
+			}
+			label := out.Stream
+			if label == "" {
+				label = out.Kind
+			}
+			commandOutput += "[" + label + "] " + text
+			if len(commandOutput) > 65536 {
+				commandOutput = commandOutput[len(commandOutput)-65536:]
+				truncated = true
+			}
+			update := event
+			update.Kind = out.Kind
+			update.Stream = out.Stream
+			update.Text = text
+			update.At = time.Now()
+			progress(update)
+		})
 		r := Record{ID: fmt.Sprintf("%d-%d", time.Now().UnixNano(), i), Timestamp: time.Now(), Provider: op.Candidate.Provider, Operation: op.Scope, CandidateIDs: []string{op.Candidate.ID}, EstimatedBytes: op.Candidate.EstimatedBytes}
 		before, be := e.disk()
 		r.AvailableBefore = before.Available
@@ -112,7 +151,7 @@ func (e *Engine) Execute(ctx context.Context, ops []Operation, progress func(str
 		if p == nil {
 			err = errors.New("unknown provider")
 		} else {
-			result, err = p.Clean(ctx, op)
+			result, err = p.Clean(operationCtx, op)
 		}
 		after, ae := e.disk()
 		r.AvailableAfter = after.Available
@@ -120,6 +159,12 @@ func (e *Engine) Execute(ctx context.Context, ops []Operation, progress func(str
 		if r.MeasurementValid {
 			r.DiskDeltaBytes = Delta(before.Available, after.Available)
 		}
+		outputMu.Lock()
+		r.CommandOutput = strings.ToValidUTF8(commandOutput, "�")
+		if truncated {
+			r.CommandOutput = "[earlier command output omitted; latest 64 KiB follows]\n" + r.CommandOutput
+		}
+		outputMu.Unlock()
 		r.PlanWarning = op.Warning
 		r.ProviderUsageBeforeBytes = result.ProviderUsageBeforeBytes
 		r.ProviderUsageAfterBytes = result.ProviderUsageAfterBytes
@@ -135,6 +180,25 @@ func (e *Engine) Execute(ctx context.Context, ops []Operation, progress func(str
 		if he := e.History.Append(r); he != nil {
 			r.Errors = append(r.Errors, "History could not be saved: "+he.Error())
 		}
+		completed++
+		if !r.Success {
+			failed++
+		}
+		event.Kind = "finished"
+		event.Completed = completed
+		event.Failed = failed
+		event.Status = "success"
+		if !r.Success {
+			event.Status = "failed"
+		}
+		if len(r.Errors) > 0 {
+			event.Text = strings.Join(r.Errors, "; ")
+			if r.Success {
+				event.Status = "success (warnings)"
+			}
+		}
+		event.At = time.Now()
+		progress(event)
 		rs = append(rs, r)
 	}
 	return rs

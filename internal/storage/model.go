@@ -44,6 +44,11 @@ type Operation struct {
 	Args           []string
 	AgeDays        int
 }
+type ProgressEvent struct {
+	Kind, Provider, CandidateID, Name, Status, Stream, Text string
+	Index, Total, Completed, Failed                         int
+	At                                                      time.Time
+}
 type Result struct {
 	ProviderReportedBytes                             *uint64
 	ProviderUsageBeforeBytes, ProviderUsageAfterBytes *uint64

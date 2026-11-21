@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/cmgann/Mac-tui-cleanup/internal/runner"
 )
 
 func TestFormattingAndAccounting(t *testing.T) {
@@ -269,5 +271,38 @@ func TestDeletionBoundaryGuard(t *testing.T) {
 	}
 	if _, e := os.Stat(sentinel); e != nil {
 		t.Fatal("guard rejection changed data")
+	}
+}
+
+type streamingProvider struct{ fakeProvider }
+
+func (p *streamingProvider) Clean(ctx context.Context, _ Operation) (Result, error) {
+	out, e := (runner.Exec{}).Run(ctx, "/bin/echo", "fixture-live-output")
+	return Result{Output: out}, e
+}
+func TestEngineProgressAndTranscriptPersistence(t *testing.T) {
+	p := &streamingProvider{}
+	measurements := 0
+	e := Engine{Home: tempDir(t), History: History{Path: filepath.Join(tempDir(t), "history.json")}, Providers: []Provider{p}, Measure: func(string) (Disk, error) { measurements++; return Disk{Available: uint64(100 + measurements*25)}, nil }}
+	var events []ProgressEvent
+	records := e.ExecuteProgress(context.Background(), []Operation{{Candidate: Candidate{ID: "fixture", Provider: "fake", Name: "Fixture"}}}, func(event ProgressEvent) { events = append(events, event) })
+	if len(records) != 1 || !records[0].Success || records[0].DiskDeltaBytes != 25 || !strings.Contains(records[0].CommandOutput, "fixture-live-output") {
+		t.Fatal(records)
+	}
+	if len(events) < 4 || events[0].Kind != "operation" || events[len(events)-1].Kind != "finished" || events[len(events)-1].Completed != 1 {
+		t.Fatal(events)
+	}
+	outputSeen := false
+	for _, event := range events {
+		if event.Kind == "output" && strings.Contains(event.Text, "fixture-live-output") {
+			outputSeen = true
+		}
+	}
+	if !outputSeen {
+		t.Fatal("stream output missing")
+	}
+	history, err := e.History.Load()
+	if err != nil || history[0].CommandOutput != records[0].CommandOutput {
+		t.Fatal(history, err)
 	}
 }

@@ -42,16 +42,16 @@ func (m Model) View() tea.View {
 		ids := m.indices()
 		if m.cursor < len(ids) {
 			c := m.snapshot.Candidates[ids[m.cursor]]
-			body = fmt.Sprintf("%s\n\n%s / %s\n%s\n\nLocation: %s\nMeasured/estimated size: %s\nRisk: %s\nModified: %s\n\n%s\n\nProtection/review: %s\n\nSpace selects · V reviews device support · P pins · Esc back", safe(c.Name), c.Provider, c.Category, c.ID, safe(c.Path), storage.Bytes(c.EstimatedBytes), c.Risk, c.LastModified.Format(time.RFC3339), safe(c.Description), candidateStatus(c))
+			body = fmt.Sprintf("%s\n\n%s / %s\n%s\n\nLocation: %s\nMeasured/estimated size: %s\nRisk: %s\nModified: %s\n\n%s\n\nProtection/review: %s\n\nSpace selects · V reviews resource · P pins · Esc back", safe(c.Name), c.Provider, c.Category, c.ID, safe(c.Path), storage.Bytes(c.EstimatedBytes), c.Risk, modifiedLabel(c.LastModified), safe(c.Description), candidateStatus(c))
 		}
 	case "support-review":
-		body = "DEVICE SUPPORT / INDIVIDUAL REVIEW\n\n"
+		body = "INDIVIDUAL RESOURCE REVIEW\n\n"
 		for _, c := range m.snapshot.Candidates {
 			if c.ID == m.reviewID {
-				body += safe(c.Path) + "\n\n" + safe(c.Description) + "\n\nSize: " + storage.Bytes(c.EstimatedBytes) + "\nModified: " + c.LastModified.Format(time.RFC3339) + "\n\n"
+				body += safe(c.Path) + "\n\n" + safe(c.Description) + "\n\nSize: " + storage.Bytes(c.EstimatedBytes) + "\nModified: " + modifiedLabel(c.LastModified) + "\n\n"
 			}
 		}
-		body += "Deleting support files can prevent symbolication of historical crash reports. Keep release-related versions or pin this folder if unsure. Recent entries require this same explicit review.\n\nType REVIEW and press Enter to acknowledge this folder only. This does not delete or select it. A separate cleanup review and DELETE confirmation are still required. Device state will be checked again.\n\n> " + m.typed + "\n\nEsc cancels."
+		body += "Device support may be needed for historical crash symbolication. Simulator deletion permanently loses installed apps, test databases and settings; runtime removal requires a new download. Preserve or pin resources you need.\n\nType REVIEW and press Enter to acknowledge this resource only. This does not delete or select it. A separate plan review and DELETE confirmation are still required. Fresh safety checks run before execution.\n\n> " + m.typed + "\n\nEsc cancels."
 	case "review":
 		body = "CLEANUP REVIEW\n\n"
 		for i, op := range m.ops {
@@ -61,7 +61,7 @@ func (m Model) View() tea.View {
 	case "confirm":
 		body = "PERMANENT DELETION\n\nThe reviewed operations cannot be undone.\nType DELETE and press Enter to execute the reviewed plan.\n\n> " + m.typed + "\n\nEsc returns to review"
 	case "progress":
-		body = "CLEANUP IN PROGRESS\n\n" + safe(m.status) + "\n\nEsc requests cancellation. Completed work cannot be undone.\nPartial results will be saved and shown."
+		body = m.progressView(width)
 	case "results":
 		success, failed := 0, 0
 		var estimated, reported uint64
@@ -110,27 +110,33 @@ func (m Model) View() tea.View {
 		}
 		body += "E exports history JSON to the application configuration directory."
 	case "settings":
-		age := fmt.Sprintf("%d days", m.settings.CacheAgeDays)
-		if m.settings.CacheAgeDays == 0 {
-			age = "ALL reclaimable cache (no age restriction)"
-		}
-		body = "SETTINGS\n\nBuildKit cache age policy: " + age + "\nEnter cycles 30 days / 7 days / all.\n\nPins: " + fmt.Sprint(len(m.settings.Pinned)) + "\nP on a candidate pins/unpins it; rescan after unpinning.\n\nSettings: " + safe(m.settingsPath) + "\nLocal JSON only. No telemetry or background deletion."
+		body = m.settingsView()
+	case "filters":
+		body = m.filtersView()
 	case "warnings":
 		body = "SCAN WARNINGS\n\n" + safe(strings.Join(m.snapshot.Errors, "\n\n")) + "\n\nEsc returns to dashboard."
 	case "help":
-		body = "HELP\n\n↑/↓ or J/K  Navigate or scroll\nEnter       Category / details / review continuation\nSpace       Select candidate or eligible category\nA           Select eligible items in current view\nC           Build and review cleanup plan\nR           Rescan (read-only)\nW           Full scan warnings\nH           History; E exports JSON\nS           Settings and BuildKit age policy\nV           Review one device-support folder\nP           Pin/unpin candidate\nO / T       Sort candidates by size / modification time\nEsc         Back or request cancellation\nQ           Quit when idle\n\nCleanup always requires review followed by typing DELETE.\nVolumes, archives and simulator bundles remain protected. Device support requires V review and individual selection.\nClose Xcode and xcodebuild before DerivedData cleanup.\nZero estimate for Docker images/containers means unknown unique savings, not zero usage.\nRead provider errors on the dashboard; incomplete scans are not complete inventories."
+		body = "HELP\n\n↑/↓ or J/K  Navigate or scroll\nEnter       Category / details / review continuation\nSpace       Select candidate or eligible category\nA           Select visible eligible items within bulk risk ceiling\nC           Build and review cleanup plan\nR           Rescan (read-only)\nW           Full scan warnings\nH           History; E exports JSON\nF / /       Persistent cleanup filters\nS           Cleanup and live-output preferences\nV           Review a device-support/simulator resource\nP           Pin/unpin candidate\nO / T       Sort candidates by size / modification time\nEsc         Back or request cancellation\nPgUp/PgDn   Scroll live output; End follows latest\nQ           Quit when idle\n\nCleanup always requires review followed by typing DELETE.\nVolumes and archives remain protected. Device support and simulators require individual review. Simulator bundles are never removed directly.\nClose Xcode and xcodebuild before filesystem/simulator cleanup.\nZero estimate for Docker images/containers means unknown unique savings, not zero usage.\nRead provider errors on the dashboard; incomplete scans are not complete inventories."
 	}
 	body = ansi.Wrap(body, width, "")
 	lines := strings.Split(body, "\n")
 	available := max(1, m.height-7)
 	start := min(m.offset, max(0, len(lines)-available))
+	if m.page == "filters" || m.page == "settings" {
+		for i, line := range lines {
+			if (!m.filterEditing && strings.Contains(ansi.Strip(line), "› ")) || (m.page == "filters" && m.filterEditing && strings.HasPrefix(ansi.Strip(line), "Edit:")) {
+				start = max(0, min(i-available+3, max(0, len(lines)-available)))
+				break
+			}
+		}
+	}
 	end := min(len(lines), start+available)
 	header := accent.Render(ansi.Truncate("devclean  /  Developer Storage Cleaner", width, "…")) + "\n" + muted.Render(strings.Repeat("─", width)) + "\n"
 	status := safe(m.status)
 	if m.busy {
 		status = m.spinner.View() + " " + status + " · " + time.Since(m.started).Round(time.Second).String()
 	}
-	footer := "\n" + muted.Render(strings.Repeat("─", width)) + "\n" + ansi.Truncate(status, width, "…") + "\n" + muted.Render(ansi.Truncate("Enter details · Space select · C clean · R rescan · H history · ? help · Q quit", width, "…"))
+	footer := "\n" + muted.Render(strings.Repeat("─", width)) + "\n" + ansi.Truncate(status, width, "…") + "\n" + muted.Render(ansi.Truncate("Enter details · Space select · C clean · F filters · S settings · R rescan · ? help · Q quit", width, "…"))
 	rendered := header + strings.Join(lines[start:end], "\n") + footer
 	v := tea.NewView(lipgloss.NewStyle().Padding(0, min(2, max(0, (m.width-1)/2))).Render(rendered))
 	v.AltScreen = true
@@ -149,7 +155,7 @@ func (m Model) dashboard(width int) string {
 		var cs []storage.Candidate
 		count, selected := 0, 0
 		for _, c := range m.snapshot.Candidates {
-			if c.Provider == name {
+			if c.Provider == name && m.visible(c) {
 				cs = append(cs, c)
 				if c.Eligible() {
 					count++
@@ -165,7 +171,7 @@ func (m Model) dashboard(width int) string {
 		}
 		b += line + "\n"
 	}
-	b += "\nSelected estimate: " + storage.Bytes(storage.Estimate(m.selected())) + "\n"
+	b += "\nFilters: " + safe(m.settings.Filter.Summary()) + " (F)\nSelected estimate: " + storage.Bytes(storage.Estimate(m.selected())) + "\n"
 	if len(m.snapshot.Errors) > 0 {
 		b += warn.Render(fmt.Sprintf("\n%d scan warnings · W opens details", len(m.snapshot.Errors)))
 	}
@@ -173,12 +179,12 @@ func (m Model) dashboard(width int) string {
 }
 func (m Model) candidates(width int) string {
 	ids := m.indices()
-	b := m.category + " / CANDIDATES\nSpace selects · Enter details · V review · P pin · O size · T date\n\n"
+	b := m.category + " / CANDIDATES\n" + safe(m.settings.Filter.Summary()) + " · F edits filters\nSpace selects · Enter details · V review · P pin · O size · T date\n\n"
 	if len(ids) == 0 {
 		return b + "No candidates available. Inspect scan warnings on the dashboard."
 	}
 	// Keep the focused row visible without requiring a second scrolling mode.
-	rows := max(1, m.height-12)
+	rows := max(1, m.height-14)
 	start := max(0, m.cursor-rows+1)
 	for j := start; j < min(len(ids), start+rows); j++ {
 		c := m.snapshot.Candidates[ids[j]]
@@ -218,7 +224,7 @@ func recordText(r storage.Record) string {
 			usage = storage.Bytes(*r.ProviderUsageBeforeBytes) + " / " + storage.Bytes(*r.ProviderUsageAfterBytes)
 		}
 	}
-	return fmt.Sprintf("%s · %s · success=%t\n%s\nEstimated: %s · Provider reported: %s\nObserved disk change: %s · Available before %s / after %s\nProvider usage before/after: %s\n%s\n%s\n%s\n\n", r.Timestamp.Format(time.RFC3339), r.Provider, r.Success, safe(r.Operation), storage.Bytes(r.EstimatedBytes), provider, observed, storage.Bytes(r.AvailableBefore), storage.Bytes(r.AvailableAfter), usage, safe(r.PlanWarning), safe(strings.Join(r.Errors, "\n")), safe(r.Output))
+	return fmt.Sprintf("%s · %s · success=%t\n%s\nEstimated: %s · Provider reported: %s\nObserved disk change: %s · Available before %s / after %s\nProvider usage before/after: %s\n%s\n%s\n%s\n\n", r.Timestamp.Format(time.RFC3339), r.Provider, r.Success, safe(r.Operation), storage.Bytes(r.EstimatedBytes), provider, observed, storage.Bytes(r.AvailableBefore), storage.Bytes(r.AvailableAfter), usage, safe(r.PlanWarning), safe(strings.Join(r.Errors, "\n")), safe(r.Output)+"\nCommand transcript (bounded):\n"+safe(r.CommandOutput))
 }
 
 func candidateStatus(c storage.Candidate) string {
@@ -227,9 +233,51 @@ func candidateStatus(c storage.Candidate) string {
 	}
 	if c.ReviewRequired {
 		if c.Reviewed {
-			return "Individual review acknowledged for this scan; fresh device checks still required"
+			return "Individual review acknowledged for this scan; fresh resource checks still required"
 		}
 		return "Individual review required; V opens review"
 	}
 	return "Eligible"
+}
+
+func (m Model) progressView(width int) string {
+	elapsed := "pending"
+	if !m.operationStarted.IsZero() {
+		elapsed = time.Since(m.operationStarted).Round(time.Second).String()
+	}
+	b := fmt.Sprintf("CLEANUP IN PROGRESS\nFinished %d/%d · Successful %d · Failed %d\n%s\nResource: %s · elapsed %s\nCommand: %s\n", m.completed, m.total, m.completed-m.failed, m.failed, safe(m.status), safe(m.operationName), elapsed, ansi.Truncate(safe(strings.TrimSpace(m.lastCommand)), max(1, width-9), "…"))
+	if len(m.completedOperations) > 0 {
+		last := m.completedOperations[len(m.completedOperations)-1]
+		b += "Last completed: " + ansi.Truncate(safe(last), max(1, width-16), "…") + "\n"
+	} else {
+		b += "No completed operations yet.\n"
+	}
+	b += "Esc cancels · Tab output/completed · PgUp/PgDn scroll · End follows latest\n"
+	if m.progressTab == 1 {
+		lines := strings.Split(ansi.Wrap(safe(strings.Join(m.completedOperations, "\n")), width, ""), "\n")
+		rows := max(1, m.height-17)
+		end := len(lines) - min(m.outputOffset, max(0, len(lines)-rows))
+		start := max(0, end-rows)
+		return b + "\nCOMPLETED OPERATIONS\n" + strings.Join(lines[start:end], "\n")
+	}
+	if !m.settings.ShowCommandOutput {
+		return b + "\nLive output display disabled in preferences. The bounded transcript is saved with each record."
+	}
+	lines := strings.Split(ansi.Wrap(safe(m.liveOutput), width, ""), "\n")
+	if len(lines) > m.settings.OutputLines {
+		lines = lines[len(lines)-m.settings.OutputLines:]
+	}
+	rows := max(1, m.height-17)
+	offset := min(m.outputOffset, max(0, len(lines)-rows))
+	end := len(lines) - offset
+	start := max(0, end-rows)
+	b += "\nLIVE COMMAND OUTPUT\n" + strings.Join(lines[start:end], "\n")
+	return b
+}
+
+func modifiedLabel(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+	return t.Format(time.RFC3339)
 }

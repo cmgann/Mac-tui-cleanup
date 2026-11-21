@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +13,11 @@ import (
 )
 
 type progressMsg string
+type cleanupProgressMsg storage.ProgressEvent
+type phaseMsg struct {
+	status string
+	cancel context.CancelFunc
+}
 type diskMsg storage.Disk
 type scanDone struct {
 	snapshot storage.Snapshot
@@ -35,6 +39,17 @@ type savedMsg struct {
 	status string
 }
 type Model struct {
+	progressTab                            int
+	lastOutputStream                       string
+	filterDraft                            config.Filter
+	filterCursor, settingsCursor           int
+	filterEditing                          bool
+	filterReturn                           string
+	liveOutput, lastCommand, operationName string
+	outputOffset, completed, failed, total int
+	operationStarted                       time.Time
+	completedOperations                    []string
+
 	reviewID                      string
 	engine                        *storage.Engine
 	settings                      config.Settings
@@ -59,6 +74,7 @@ func New(e *storage.Engine, s config.Settings, path string, contexts ...context.
 	if len(contexts) > 0 {
 		ctx = contexts[0]
 	}
+	s = config.Normalize(s)
 	return Model{ctx: ctx, workers: &sync.WaitGroup{}, engine: e, settings: s, settingsPath: path, page: "dashboard", width: 88, height: 28, spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot)), events: make(chan tea.Msg, 32)}
 }
 func (m Model) Init() tea.Cmd { return func() tea.Msg { return progressMsg("initial") } }
@@ -117,10 +133,11 @@ func (m *Model) applyPins() {
 func (m Model) indices() []int {
 	var ids []int
 	for i, c := range m.snapshot.Candidates {
-		if c.Provider == m.category {
+		if c.Provider == m.category && m.visible(c) {
 			ids = append(ids, i)
 		}
 	}
+	m.settings.Filter.SortIndices(m.snapshot.Candidates, ids)
 	return ids
 }
 func (m Model) categories() []string {
@@ -153,6 +170,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.scan()
 		}
 		m.status = string(v)
+		return m, m.wait()
+	case phaseMsg:
+		m.cancel = v.cancel
+		m.status = v.status
+		return m, m.wait()
+	case cleanupProgressMsg:
+		event := storage.ProgressEvent(v)
+		m.completed = event.Completed
+		m.failed = event.Failed
+		m.total = event.Total
+		switch event.Kind {
+		case "operation":
+			m.operationName = event.Name
+			m.operationStarted = time.Now()
+			m.status = "Cleaning " + event.Name
+			m.lastCommand = ""
+			m.appendLive("\n--- " + event.Name + " ---\n")
+		case "command":
+			m.lastCommand = event.Text
+			m.lastOutputStream = ""
+			m.appendLive("\n$ " + event.Text)
+		case "output":
+			if m.settings.ShowCommandOutput {
+				if event.Stream != m.lastOutputStream {
+					m.appendLive("\n[" + event.Stream + "]\n")
+					m.lastOutputStream = event.Stream
+				}
+				m.appendLive(event.Text)
+			}
+		case "finished":
+			m.completedOperations = append(m.completedOperations, event.Name+": "+event.Status)
+			if len(m.completedOperations) > 200 {
+				m.completedOperations = m.completedOperations[len(m.completedOperations)-200:]
+			}
+			m.appendLive("\n[" + event.Status + "] " + event.Text + "\n")
+		}
 		return m, m.wait()
 	case diskMsg:
 		m.snapshot.Disk = storage.Disk(v)
@@ -209,9 +262,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = v.err.Error()
 		}
 		return m, nil
+	case tea.PasteMsg:
+		if m.page == "filters" && m.filterEditing {
+			m.typed += strings.ReplaceAll(strings.ReplaceAll(v.Content, "\n", " "), "\r", " ")
+			r := []rune(m.typed)
+			m.typed = string(r[:min(128, len(r))])
+		}
+		return m, nil
 	case tea.KeyPressMsg:
 		k := v.String()
 		if m.busy {
+			if m.page == "progress" {
+				switch k {
+				case "up", "k":
+					m.outputOffset++
+				case "down", "j":
+					m.outputOffset = max(0, m.outputOffset-1)
+				case "pgup":
+					m.outputOffset += max(1, m.height-15)
+				case "pgdown":
+					m.outputOffset = max(0, m.outputOffset-max(1, m.height-15))
+				case "end":
+					m.outputOffset = 0
+				case "tab":
+					m.progressTab = 1 - m.progressTab
+					m.outputOffset = 0
+				}
+			}
 			if k == "esc" || k == "ctrl+c" {
 				m.cancel()
 				m.status = "Cancellation requested; waiting for partial results"
@@ -220,6 +297,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if k == "ctrl+c" {
 			return m, tea.Quit
+		}
+		if handled, cmd := m.preferenceKey(k); handled {
+			return m, cmd
 		}
 		if m.page == "support-review" {
 			switch k {
@@ -248,7 +328,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					m.page = "details"
-					m.status = "Review acknowledged for this scan. Space selects this folder; C reviews the deletion plan."
+					m.status = "Review acknowledged for this scan. Space selects this resource; C reviews the deletion plan."
 					m.typed = ""
 					m.reviewID = ""
 				}
@@ -273,12 +353,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					e := m.engine
 					ops := append([]storage.Operation(nil), m.ops...)
 					m.page = "progress"
+					m.progressTab = 0
+					m.lastOutputStream = ""
+					m.offset = 0
+					m.liveOutput = ""
+					m.lastCommand = ""
+					m.operationName = ""
+					m.outputOffset = 0
+					m.completed = 0
+					m.failed = 0
+					m.total = len(ops)
+					m.completedOperations = nil
 					m.typed = ""
 					return m, m.start("Cleaning selected resources", func(ctx context.Context, p func(string)) tea.Msg {
-						rs := e.Execute(ctx, ops, p)
+						rs := e.ExecuteProgress(ctx, ops, func(event storage.ProgressEvent) {
+							msg := cleanupProgressMsg(event)
+							if event.Kind == "output" {
+								select {
+								case m.events <- msg:
+								default:
+								}
+							} else {
+								select {
+								case m.events <- msg:
+								case <-m.ctx.Done():
+								}
+							}
+						})
 						p("Rescanning after cleanup")
 						scanctx, c := context.WithTimeout(m.ctx, 6*time.Minute)
 						defer c()
+						select {
+						case m.events <- phaseMsg{status: "Rescanning after cleanup", cancel: c}:
+						case <-m.ctx.Done():
+						}
 						s := e.ScanProgress(scanctx, p)
 						hs, err := e.History.Load()
 						return cleanDone{rs, s, hs, err}
@@ -315,6 +423,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.page = "warnings"
 			m.offset = 0
 			return m, nil
+		case "f", "F", "/":
+			m.filterDraft = m.settings.Filter
+			m.filterCursor = 0
+			m.filterEditing = false
+			m.filterReturn = m.page
+			if m.filterReturn == "details" {
+				m.filterReturn = "candidates"
+			}
+			if m.filterReturn != "candidates" && m.filterReturn != "settings" {
+				m.filterReturn = "dashboard"
+			}
+			m.page = "filters"
+			m.offset = 0
+			return m, nil
 		case "s", "S":
 			m.page = "settings"
 			m.offset = 0
@@ -322,18 +444,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r", "R":
 			m.page = "dashboard"
 			return m, m.scan()
-		}
-		if m.page == "settings" && k == "enter" {
-			switch m.settings.CacheAgeDays {
-			case 30:
-				m.settings.CacheAgeDays = 7
-			case 7:
-				m.settings.CacheAgeDays = 0
-			default:
-				m.settings.CacheAgeDays = 30
-			}
-			s, path := m.settings, m.settingsPath
-			return m, m.start("Saving settings", func(context.Context, func(string)) tea.Msg { return savedMsg{config.Save(path, s), "Settings saved"} })
 		}
 		if m.page == "history" && (k == "e" || k == "E") {
 			rs, path := m.history, strings.TrimSuffix(m.engine.History.Path, "history.json")+"history-export.json"
@@ -409,13 +519,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cat := m.categories()[m.cursor]
 				all := true
 				for _, c := range m.snapshot.Candidates {
-					if c.Provider == cat && c.Eligible() && !c.ReviewRequired && !c.Selected {
+					if c.Provider == cat && m.bulkEligible(c) && !c.Selected {
 						all = false
 					}
 				}
 				for i := range m.snapshot.Candidates {
 					c := &m.snapshot.Candidates[i]
-					if c.Provider == cat && c.Eligible() && !c.ReviewRequired {
+					if c.Provider == cat && m.bulkEligible(*c) {
 						c.Selected = !all
 					}
 				}
@@ -427,7 +537,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						c.Selected = !c.Selected
 					} else {
 						if c.ReviewRequired && !c.Reviewed && !c.Protected {
-							m.status = "Individual review required: V opens device-support review"
+							m.status = "Individual review required: V opens resource review"
 						} else {
 							m.status = "Protected: " + c.ProtectionReason
 						}
@@ -439,7 +549,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if (k == "a" || k == "A") && (m.page == "dashboard" || m.page == "candidates") {
 			for i := range m.snapshot.Candidates {
 				c := &m.snapshot.Candidates[i]
-				if c.Eligible() && !c.ReviewRequired && (m.page == "dashboard" || c.Provider == m.category) {
+				if m.bulkEligible(*c) && (m.page == "dashboard" || c.Provider == m.category) {
 					c.Selected = true
 				}
 			}
@@ -471,17 +581,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if (k == "o" || k == "O") && m.page == "candidates" {
-			sort.SliceStable(m.snapshot.Candidates, func(i, j int) bool {
-				return m.snapshot.Candidates[i].EstimatedBytes > m.snapshot.Candidates[j].EstimatedBytes
-			})
-			return m, nil
-		}
-		if (k == "t" || k == "T") && m.page == "candidates" {
-			sort.SliceStable(m.snapshot.Candidates, func(i, j int) bool {
-				return m.snapshot.Candidates[i].LastModified.After(m.snapshot.Candidates[j].LastModified)
-			})
-			return m, nil
+		if (k == "o" || k == "O" || k == "t" || k == "T") && m.page == "candidates" {
+			m.settings.Filter.Sort = "size"
+			if k == "t" || k == "T" {
+				m.settings.Filter.Sort = "modified"
+			}
+			m.cursor = 0
+			return m, m.saveSettings("Sort preference saved")
 		}
 		if (k == "c" || k == "C") && (m.page == "dashboard" || m.page == "candidates" || m.page == "details") {
 			cs, e, age := m.selected(), m.engine, m.settings.CacheAgeDays
@@ -495,4 +601,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m *Model) appendLive(text string) {
+	m.liveOutput += strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+	if len(m.liveOutput) > 65536 {
+		m.liveOutput = m.liveOutput[len(m.liveOutput)-65536:]
+	}
 }

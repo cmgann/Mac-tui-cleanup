@@ -60,3 +60,18 @@ jobs:
       - run: go mod download
       - name: Validate live provider cleanup and preserved data
         run: go test -tags=integration -v -timeout=12m ./internal/providers -run '^TestLiveDockerCleanup$'
+  live-simulator:
+    name: Disposable native simulator cleanup
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      DEVCLEAN_LIVE_SIMULATOR: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - run: go mod download
+      - name: Validate supported simctl deletion in a private device set
+        run: go test -tags=integration -v -timeout=7m ./internal/providers -run '^TestLiveSimulatorCleanup$'
