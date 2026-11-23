@@ -54,6 +54,47 @@ func TestPnpmRegistryLinksRemainReadOnlyAndOtherLinksBlockCleanup(t *testing.T) 
 	}
 }
 
+func TestSwiftMaintenanceUsesOwnManifestAndInheritedHelp(t *testing.T) {
+	home := tempDir(t)
+	c := &Caches{Home: home, Environment: map[string]string{"XDG_CACHE_HOME": filepath.Join(home, ".cache")}, LookPath: func(string) (string, error) { return "/fixture/swift", nil }}
+	path := filepath.Join(c.cacheBase(), "org.swift.swiftpm")
+	if e := os.MkdirAll(path, 0700); e != nil {
+		t.Fatal(e)
+	}
+	c.Run = &fakeRunner{fn: func(_ string, args []string) (string, error) {
+		if strings.Join(args, " ") == "package --help" {
+			return "purge-cache --cache-path --config-path --security-path", nil
+		}
+		return "", errors.New("unexpected command")
+	}}
+	ctx, done, err := c.context(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	spec, _ := cacheSpecFor("swift")
+	candidate, err := c.discover(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.Reviewed = true
+	_, op, err := c.prepare(ctx, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := runner.Options(ctx).Directory
+	manifest, err := os.ReadFile(filepath.Join(dir, "Package.swift"))
+	if err != nil || strings.Contains(string(manifest), "dependencies:") {
+		t.Fatal(string(manifest), err)
+	}
+	if !strings.Contains(string(manifest), "DevcleanCacheMaintenance") || !strings.Contains(strings.Join(op.Args, " "), "--config-path .devclean-config --security-path .devclean-security") {
+		t.Fatal(op)
+	}
+	if _, err := os.Stat(filepath.Join(home, "Package.swift")); !os.IsNotExist(err) {
+		t.Fatal("manifest escaped private directory", err)
+	}
+}
+
 func cacheFixture(t *testing.T) (*Caches, *fakeRunner, string, *bool) {
 	t.Helper()
 	home := tempDir(t)

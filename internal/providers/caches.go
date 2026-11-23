@@ -33,7 +33,7 @@ var cacheSpecs = []cacheSpec{
 	{"npm", "npm", "npm cache", []string{"config", "get", "cache"}, []string{"cache", "--help"}},
 	{"pnpm", "pnpm", "pnpm store", []string{"store", "path", "--silent"}, []string{"store", "--help"}},
 	{"yarn", "yarn", "Yarn Classic cache", []string{"cache", "dir"}, []string{"cache", "--help"}},
-	{"swift", "swift", "Swift Package Manager cache", nil, []string{"package", "purge-cache", "--help"}},
+	{"swift", "swift", "Swift Package Manager cache", nil, []string{"package", "--help"}},
 }
 
 func (*Caches) ID() string { return "Other Developer" }
@@ -368,10 +368,21 @@ func (c *Caches) prepare(ctx context.Context, candidate storage.Candidate) (cont
 		op.Args = []string{"cache", "clean", "--cache-folder", base}
 		op.Candidate.ScopePaths = []string{base}
 	case "swift":
-		if !strings.Contains(help, "purge-cache") || !strings.Contains(help, "--cache-path") {
+		if !strings.Contains(help, "purge-cache") || !strings.Contains(help, "--cache-path") || !strings.Contains(help, "--config-path") || !strings.Contains(help, "--security-path") {
 			return ctx, op, errors.New("installed SwiftPM cache purge capability unavailable")
 		}
-		op.Args = []string{"package", "--cache-path", candidate.Path, "purge-cache"}
+		// SwiftPM requires a package root even for global purge. This fixed
+		// manifest belongs only to our private directory and has no dependencies,
+		// targets or hooks. Never evaluate a user's Package.swift for maintenance.
+		directory := runner.Options(ctx).Directory
+		if directory == "" {
+			return ctx, op, errors.New("SwiftPM maintenance requires a private command directory")
+		}
+		manifest := "// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(name: \"DevcleanCacheMaintenance\")\n"
+		if e := os.WriteFile(filepath.Join(directory, "Package.swift"), []byte(manifest), 0600); e != nil {
+			return ctx, op, e
+		}
+		op.Args = []string{"package", "--cache-path", candidate.Path, "--config-path", ".devclean-config", "--security-path", ".devclean-security", "purge-cache"}
 	}
 	op.Scope = exe + " " + strings.Join(op.Args, " ") + " (global cache: " + candidate.Path + ")"
 	return ctx, op, nil
