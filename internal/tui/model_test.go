@@ -15,6 +15,50 @@ import (
 )
 
 func key(s string) tea.KeyPressMsg { return tea.KeyPressMsg{Code: []rune(s)[0], Text: s} }
+func TestProtectedPathEditorPersistsAndDeselectsWithoutDeletion(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(home, "cache with spaces")
+	if err := os.Mkdir(cache, 0700); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(home, "state/settings.json")
+	m := New(&storage.Engine{Home: home}, config.Defaults(), settingsPath)
+	m.snapshot.Candidates = []storage.Candidate{{ID: "cache", Path: cache, Reclaimable: true, Selected: true}}
+	m.page = "settings"
+	m.settingsCursor = 4
+	send := func(k tea.KeyPressMsg) { u, _ := m.Update(k); m = u.(Model) }
+	send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	send(key("a"))
+	for _, r := range "~/cache with spaces/future-symbols" {
+		send(key(string(r)))
+	}
+	send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(m.settings.ProtectedPaths) != 0 || !m.snapshot.Candidates[0].Selected {
+		t.Fatal("draft applied before save")
+	}
+	send(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	select {
+	case msg := <-m.events:
+		u, _ := m.Update(msg)
+		m = u.(Model)
+	case <-time.After(3 * time.Second):
+		t.Fatal("protection save blocked")
+	}
+	m.Wait()
+	loaded, err := config.Load(settingsPath)
+	if err != nil || len(loaded.ProtectedPaths) != 1 || loaded.ProtectedPaths[0] != filepath.Join(cache, "future-symbols") {
+		t.Fatal(loaded, err)
+	}
+	if !m.snapshot.Candidates[0].Protected || m.snapshot.Candidates[0].Selected {
+		t.Fatal("new descendant protection did not invalidate selection")
+	}
+	if _, err := os.Stat(cache); err != nil {
+		t.Fatal("protection editor deleted cache", err)
+	}
+}
 func TestSelectionProtectionAndReview(t *testing.T) {
 	m := New(&storage.Engine{}, config.Settings{CacheAgeDays: 30}, "unused")
 	m.snapshot.Candidates = []storage.Candidate{{ID: "a", Provider: "Docker", Reclaimable: true, Risk: storage.Low}, {ID: "b", Provider: "Docker", Protected: true, Reclaimable: true}}

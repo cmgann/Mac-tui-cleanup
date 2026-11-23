@@ -35,12 +35,26 @@ func TestPreferencesPersistAndMigrate(t *testing.T) {
 	s.BulkMaxRisk = storage.Low
 	s.OutputLines = 200
 	s.ShowCommandOutput = false
+	s.Filter.OnlyStale = true
+	s.ProtectedPaths = []string{"~/cache/keep symbols"}
+	s.StaleDays = 180
 	if e := Save(path, s); e != nil {
 		t.Fatal(e)
 	}
 	got, e := Load(path)
 	if e != nil || got.Filter != s.Filter || got.ShowCommandOutput || got.BulkMaxRisk != storage.Low || got.OutputLines != 200 {
 		t.Fatal(got, e)
+	}
+	if got.StaleDays != 180 || len(got.ProtectedPaths) != 1 || got.ProtectedPaths[0] != s.ProtectedPaths[0] {
+		t.Fatal("Phase 3 preferences lost", got)
+	}
+	c := storage.Candidate{Reclaimable: true}
+	if (Filter{OnlyStale: true}).Matches(c, time.Now()) {
+		t.Fatal("stale-only filter accepted unknown age")
+	}
+	c.Stale = true
+	if !(Filter{OnlyStale: true}).Matches(c, time.Now()) {
+		t.Fatal("stale hint hidden")
 	}
 	normalized := Normalize(Settings{Filter: Filter{OlderThanDays: -1, MaxRisk: "invalid", Sort: "invalid", Query: string(make([]rune, 200))}})
 	if normalized.Filter.OlderThanDays != 0 || normalized.Filter.MaxRisk != "" || len([]rune(normalized.Filter.Query)) != 128 || normalized.OutputLines != 100 {

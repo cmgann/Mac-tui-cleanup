@@ -349,7 +349,13 @@ func (c *Caches) prepare(ctx context.Context, candidate storage.Candidate) (cont
 		if e != nil || strings.TrimSpace(out) != candidate.Path {
 			return ctx, op, errors.New("pnpm store-dir does not resolve to the reviewed store")
 		}
-		op.Args = []string{"store", "prune", "--store-dir", base, "--cache-dir", "."}
+		// pnpm's supported --config.<name> syntax overrides settings that
+		// are not accepted as command-specific flags. Verify it read-only.
+		cacheDir, e := c.Run.Run(ctx, exe, "config", "get", "cache-dir", "--config.cache-dir=.")
+		if e != nil || (strings.TrimSpace(cacheDir) != "." && strings.TrimSpace(cacheDir) != runner.Options(ctx).Directory) {
+			return ctx, op, errors.New("pnpm cannot isolate ancillary cache pruning")
+		}
+		op.Args = []string{"store", "prune", "--store-dir", base, "--config.cache-dir=."}
 		op.Candidate.ScopePaths = []string{base}
 	case "yarn":
 		if !strings.Contains(help, "clean") {

@@ -191,6 +191,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = v.err.Error()
 		} else {
 			m.snapshot.Candidates = v.candidates
+			for i := range m.snapshot.Candidates {
+				if !m.visible(m.snapshot.Candidates[i]) {
+					m.snapshot.Candidates[i].Selected = false
+				}
+			}
 			m.status = v.status
 		}
 		return m, nil
